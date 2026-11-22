@@ -1,12 +1,12 @@
 {
   "nightly": {
-    "date": "2026-11-21",
-    "commit": "f037744a79f9982c47876f49c5a3067279f88706",
-    "short": "f037744",
-    "tag": "nightly-source/2026-11-21-f037744",
-    "published_at": "2026-11-21T16:57:45Z"
+    "date": "2026-11-22",
+    "commit": "2b77287de099c9316278ba7ac4d83590fdb7ef30",
+    "short": "2b77287",
+    "tag": "nightly-source/2026-11-22-2b77287",
+    "published_at": "2026-11-22T07:22:28Z"
   },
-  "launcher": "launcher@0.2.100",
-  "version_tag": "nightly-2026-11-21-f037744",
-  "updated_at": "2026-11-22T01:52:00+00:00"
+  "launcher": "launcher@0.2.102",
+  "version_tag": "nightly-2026-11-22-2b77287",
+  "updated_at": "2026-11-22T08:58:46+00:00"
 }
