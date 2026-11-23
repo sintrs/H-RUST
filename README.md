@@ -40,7 +40,7 @@ tar -xzf horizon-linux-x86_64-offline-*.tar.gz
 |---|---|---|
 | `release-offline.yml` | `nightly-offline` | `horizon-linux-x86_64-offline-<日期>-<时分>.tar.gz` — 启动器 + 本体，一个包自足 |
 | `release-game.yml` | `nightly-game` | `horizon-linux-x86_64-<版本 tag>.tar.gz` — 上游 nightly 包原样转发 |
-| `native-mod.yml` | `native-mod` | `horizon-native-mod-<mod 版本>-<commit 短码>.tar.gz` — 编好的 native mod，8 MB 上下 |
+| `native-mod.yml` | `native-mod` | `horizon-linux-x86_64-native-offline-<日期>-<时分>.tar.gz` — 启动器 + 带小地图的版本目录，解压即玩，约 130 MB |
 
 game 的附件名就是上游那个版本，比如 `horizon-linux-x86_64-nightly-2026-11-20-0a875da.tar.gz`；
 offline 的带构建时刻（北京时间），比如 `horizon-linux-x86_64-offline-2026-11-21-1643.tar.gz`。
@@ -50,33 +50,45 @@ offline 的带构建时刻（北京时间），比如 `horizon-linux-x86_64-offl
 
 同一个 nightly 上修 bug 重跑：手动 `Build offline`，勾 `force=true`，附件会被覆盖。
 
-### native mod
+### native mod（带小地图的离线包）
 
-`native-mod.yml` 编 minimap 的 native mod，产物是三件（约 8 MB）：
+`native-mod.yml` 编 minimap 的 native mod，并把编出来的整个版本目录打进一个离线包：
 
 ```
-libminimap_worldmap_waypoints_reworked.so   2.9 M
-libhorizon_patch.so                         5.2 M
-native-mods.json                            清单，sha256 与 identity 都是编完现算的
+horizon-linux-x86_64-native-offline-<日期>-<时分>.tar.gz      约 130 MB
+├── horizon-launcher
+├── data/versions/native-<commit 短码>-<hash>/   完整版本目录：loader、SDK 库、mod .so
+└── PLAY-OFFLINE.txt
 ```
 
-解压到 `versions/native-<commit 短码>-<hash>/` 覆盖同名文件即可，目标机不用 rust、不用 SDK。
+解开直接 `./horizon-launcher`：启动器自己把 `data/versions` 复制进数据目录、写 `.installed`、
+设为选中，不需要安装脚本，不需要底座 nightly，也不需要编译。不带 `.local`
+（811 MB 资源缓存，首启重建，约 1–2 分钟）。
+
 **只对同一个 commit 的本体有效**：`.so` 里嵌着 identity `<commit> <mod> <ver> <rustc>`，
 本体换了 nightly 就会被当「made for another Horizon version」拒载，只能重编。
 
 编法不是复刻 rustc 参数：workflow 下官方 AppImage，用它自己的 `native-build` 子命令编，
-和启动器在桌面里点 Build 是同一条代码路径。mod 源取上游 tag `v0.7.9`，它的 `[native]`
-已经 pin 了这次 nightly 的 commit 与 mixins rev。
+和启动器在桌面里点 Build 是同一条代码路径。mod 源取上游 tag `v0.7.9`，`pin_commit` 与
+`pin_nightly` 把它的 `[native]` 改到目标 nightly 再编，源码一行不动。
+
+LOD 移植：11-21 之后上游把 tile 换成 span 压缩的 `TileColumns`（`len`/`iter` 全 crate 私有），
+mod 那三处访问会直接编不过。脚本会看目标版本的 `lod.rs` 决定要不要打
+`tools/ci/native-mod-lod-surface.patch`，改走 `Lod::surface` 按块列取样。
 
 `native-build` 的前置条件「版本必须 prepared」在 CI 里被跳过了：它只问
 `.local/horizon-client/<mc>/horizon-resources.json` 能否解析（`backend.rs` 的 `prepared_at`），
 而编译只读 SDK 的 rmeta 与 mod 源码，一个字节都不读游戏资源。所以脚本写个 `{}` 进去就够，
-不用下载 Minecraft、不用 Java、不用等几分钟反编译。CI 整轮约 3 分钟，其中编译 165 s。
+不用下载 Minecraft、不用 Java、不用等几分钟反编译。编译约 3 分钟，组离线包再加约 3 分钟
+（290 MB 全目录 gzip，最大那个 `libhorizon_mod_host.so` 只压到 41%）。
 
 ```bash
-gh workflow run native-mod.yml          # 云端，约 3 分钟
+gh workflow run native-mod.yml -f mod_ref=v0.7.9 \
+  -f pin_commit=<40 位 commit> -f pin_nightly=nightly-<日期>-<短码> -f install_tag=nightly
 bash tools/ci/build-native-mod.sh       # 本机（首次约 1.1 G 下载：SDK 276 MB + rust 592 MB）
 ```
+
+这个 workflow 没有 push 触发：它会替换 Release 附件，而 inputs 的默认值指向旧的 nightly。
 
 runner 上还要 ALSA 与 libudev 的 `-dev` 头文件（编 wgpu/winits 用），workflow 里有这一步。
 
