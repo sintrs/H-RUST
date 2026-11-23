@@ -57,8 +57,10 @@ if [ -e "$DEST" ]; then
   echo "  旧目录已改名：$KEEP"
 fi
 echo "  复制 $(du -sh "$ROOT/versions/$BASE" | cut -f1) → $DEST"
-cp -a "$ROOT/versions/$BASE" "$DEST"
-cp -a "$HERE/payload/." "$DEST/"
+# 不用裸 cp -a：-a 会尝试保留属主/时间戳，在容器或 root 沙箱里那两步必然失败，
+# cp 返回非零，配合 set -e 会让脚本在复制到一半时静默中止（payload 根本没铺上）。
+cp -a --no-preserve=ownership,timestamps "$ROOT/versions/$BASE" "$DEST"
+cp -a --no-preserve=ownership,timestamps "$HERE/payload/." "$DEST/"
 : > "$DEST/.installed"
 
 step "4/4 校验"
