@@ -33,13 +33,14 @@ tar -xzf horizon-linux-x86_64-offline-*.tar.gz
 
 ## 发
 
-两条 workflow，都读上游 nightly，与 `state/*.json` 比对，没变化就跳过。产物发到**滚动 Release**：
-每个 workflow 一个固定 tag，每次构建覆盖附件，所以仓库里始终只有两个 Release。
+三条 workflow，都读上游 nightly，与 `state/*.json` 比对，没变化就跳过。产物发到**滚动 Release**：
+每个 workflow 一个固定 tag，每次构建覆盖附件，所以仓库里始终只有三个 Release。
 
 | Workflow | Release tag | 附件 |
 |---|---|---|
 | `release-offline.yml` | `nightly-offline` | `horizon-linux-x86_64-offline-<日期>-<时分>.tar.gz` — 启动器 + 本体，一个包自足 |
 | `release-game.yml` | `nightly-game` | `horizon-linux-x86_64-<版本 tag>.tar.gz` — 上游 nightly 包原样转发 |
+| `native-mod.yml` | `native-mod` | `horizon-native-mod-<mod 版本>-<commit 短码>.tar.gz` — 编好的 native mod，8 MB 上下 |
 
 game 的附件名就是上游那个版本，比如 `horizon-linux-x86_64-nightly-2026-11-20-0a875da.tar.gz`；
 offline 的带构建时刻（北京时间），比如 `horizon-linux-x86_64-offline-2026-11-21-1643.tar.gz`。
@@ -48,6 +49,29 @@ offline 的带构建时刻（北京时间），比如 `horizon-linux-x86_64-offl
 每次运行另留一份 artifact（保留 3 天），方便核对某一次的具体产物。
 
 同一个 nightly 上修 bug 重跑：手动 `Build offline`，勾 `force=true`，附件会被覆盖。
+
+### native mod
+
+`native-mod.yml` 编 minimap 的 native mod，产物是三件（约 8 MB）：
+
+```
+libminimap_worldmap_waypoints_reworked.so   2.9 M
+libhorizon_patch.so                         5.2 M
+native-mods.json                            清单，sha256 与 identity 都是编完现算的
+```
+
+解压到 `versions/native-<commit 短码>-<hash>/` 覆盖同名文件即可，目标机不用 rust、不用 SDK。
+**只对同一个 commit 的本体有效**：`.so` 里嵌着 identity `<commit> <mod> <ver> <rustc>`，
+本体换了 nightly 就会被当「made for another Horizon version」拒载，只能重编。
+
+编法不是复刻 rustc 参数：workflow 下官方 AppImage，用它自己的 `native-build` 子命令编，
+和启动器在桌面里点 Build 是同一条代码路径。mod 源取上游 tag `v0.7.9`，它的 `[native]`
+已经 pin 了这次 nightly 的 commit 与 mixins rev。
+
+```bash
+gh workflow run native-mod.yml          # 云端
+bash tools/ci/build-native-mod.sh       # 本机（约 1.1 G 下载，编译 140 s 上下）
+```
 
 ## 改
 
