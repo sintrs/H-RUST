@@ -68,10 +68,17 @@ native-mods.json                            清单，sha256 与 identity 都是�
 和启动器在桌面里点 Build 是同一条代码路径。mod 源取上游 tag `v0.7.9`，它的 `[native]`
 已经 pin 了这次 nightly 的 commit 与 mixins rev。
 
+`native-build` 的前置条件「版本必须 prepared」在 CI 里被跳过了：它只问
+`.local/horizon-client/<mc>/horizon-resources.json` 能否解析（`backend.rs` 的 `prepared_at`），
+而编译只读 SDK 的 rmeta 与 mod 源码，一个字节都不读游戏资源。所以脚本写个 `{}` 进去就够，
+不用下载 Minecraft、不用 Java、不用等几分钟反编译。CI 整轮约 3 分钟，其中编译 165 s。
+
 ```bash
-gh workflow run native-mod.yml          # 云端
-bash tools/ci/build-native-mod.sh       # 本机（约 1.1 G 下载，编译 140 s 上下）
+gh workflow run native-mod.yml          # 云端，约 3 分钟
+bash tools/ci/build-native-mod.sh       # 本机（首次约 1.1 G 下载：SDK 276 MB + rust 592 MB）
 ```
+
+runner 上还要 ALSA 与 libudev 的 `-dev` 头文件（编 wgpu/winits 用），workflow 里有这一步。
 
 ## 改
 
