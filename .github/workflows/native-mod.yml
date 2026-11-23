@@ -1,10 +1,13 @@
 name: Build minimap native mod
 
-# 把 native mod 的编译搬到 Actions：产物是"编好的那几件"，下下来放进已有
-# native-<commit>-<hash>/ 就能跑，不用在目标机上装 rust / SDK / 编译缓存。
+# 把 native mod 的编译搬到 Actions：产物是**完整可用的 native 版本增量**，
+# 下下来解开跑 install-native-build.sh 就能玩，目标机不用装 rust / SDK / 编译缓存。
 #
 # 编的方式不是复刻 rustc：用官方 launcher 的 `native-build` 子命令（上游 mod 仓库
 # 自己的 validate.yml 也是这么编的），所以与启动器在本机编出来的是同一条代码路径。
+#
+# 为什么要带那 330 MB 引擎 .so：native 版本目录 = 一个 nightly 的全套文件 + 该 commit
+# 的 SDK 引擎库 + 编出来的 mod .so。只给后 8 MB 的话，目标机还得自己下 SDK 补齐。
 on:
   workflow_dispatch:
     inputs:
@@ -35,7 +38,7 @@ concurrency:
 
 jobs:
   build:
-    name: native-build against nightly-2026-11-20
+    name: native-build the full version folder
     runs-on: ubuntu-22.04   # glibc 2.35，与上游官方包同档；不要用 -latest
     timeout-minutes: 90
     env:
@@ -69,18 +72,19 @@ jobs:
         if: always()
         run: |
           set -uo pipefail
-          cat dist-native/BUILD.txt 2>/dev/null || true
+          cat dist-native/pkg/BUILD.txt 2>/dev/null || true
           echo '--- native-build 日志尾部 ---'
           tail -20 build/native-mod/native-build.log 2>/dev/null || true
 
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: native-mod
+          name: native-full
           path: |
             dist-native/*.tar.gz
             dist-native/*.sha256
-            dist-native/BUILD.txt
+            dist-native/pkg/BUILD.txt
+            dist-native/pkg/manifest.json
             build/native-mod/native-build.log
           if-no-files-found: warn
           retention-days: 14
@@ -93,8 +97,12 @@ jobs:
           set -euo pipefail
           TAG=native-mod
           if ! gh release view "$TAG" >/dev/null 2>&1; then
-            gh release create "$TAG" --title 'Minimap native mod' --prerelease \
-              --notes '编好的 native mod（libminimap + libhorizon_patch + native-mods.json）。
-          解压放进 versions/native-<commit>-<hash>/ 覆盖同名文件即可，不需要重新编译。'
+            gh release create "$TAG" --title 'Minimap native mod (full build)' --prerelease \
+              --notes '完整的 native 版本增量：编出来的两个 .so + 该 commit 的 SDK 引擎库 + mod 源码副本。
+          解开 → bash install-native-build.sh → 把实例切到新版本，不需要下载 SDK，也不需要编译。'
           fi
+          # 包名每次带日期短码都变，先清掉上一轮的附件，让这个 Release 恒一个包。
+          gh release view "$TAG" --json assets -q '.assets[].name' | while read -r name; do
+            [ -n "$name" ] && gh release delete-asset "$TAG" "$name" -y >/dev/null 2>&1 || true
+          done
           gh release upload "$TAG" dist-native/*.tar.gz dist-native/*.sha256 --clobber

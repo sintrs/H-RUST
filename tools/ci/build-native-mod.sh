@@ -28,12 +28,18 @@
 # 不需要 Minecraft、不需要 Java、不需要账号：native-build 要的“已准备”只是一个清单文件，
 # 见第 5 步。编译只读 SDK 的 rmeta 与 mod 源码，818 MB 的游戏资源只供运行游戏用。
 #
-# 产物（<输出目录>，顶层平铺，不套目录）：
-#   libminimap_worldmap_waypoints_reworked.so   2.9 M  mod 本体
-#   libhorizon_patch.so                         5.2 M  打了 mixins 的游戏补丁
-#   native-mods.json                            启动器自己写的清单（sha256 / identity）
-#   BUILD.txt                                   这一包对应的 pin 与校验和
-# 以及同名 .tar.gz。放进已有的 native-<commit>-<hash>/ 即可替换，无需重编。
+# 产物（<输出目录>）：
+#   horizon-native-full-<modver>-<short>.tar.gz   完整 native 版本增量，解压后：
+#     install-native-build.sh   本机组装脚本（复制 base → 覆盖 → touch .installed）
+#     manifest.json             版本目录名、base、commit、每个文件的 sha256
+#     BUILD.txt                 这一包对应的 pin 与校验和
+#     payload/                  相对 base nightly 的全部增量（13 项 / 约 336 MB）：
+#       libhorizon_patch.so / libminimap_*.so   8 MB，这次真正编出来的
+#       libhorizon_*.so / libmod_*.so / libstd  328 MB，该 commit 的 SDK 引擎库
+#       horizon-native-mods/<id>/               1 MB，mod 源码副本
+#       native-mods.json                        启动器写的清单
+# 本机不需要下载 SDK、不需要编译：解开跑 install-native-build.sh 就有可玩的版本目录。
+# 不带 .local/（693 MB 资源缓存，首次启动会自己重建）。
 set -euo pipefail
 
 ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
@@ -215,13 +221,26 @@ step "8/9 编译（启动器自己的 Rust 与 SDK，profile=optimized）"
 BUILT=$(ls -td "$HORIZON_LAUNCHER_HOME"/versions/native-* 2>/dev/null | head -1 || true)
 [ -n "$BUILT" ] || die "没找到 native-* 产物目录"
 
-step "9/9 收集与校验"
-python3 - "$BUILT" "$OUT" "$COMMIT" "$MIXINS" "$SHORT" "$MOD_VERSION" \
+step "9/9 收集、校验、打包（完整 native 版本，不只是那 2 个 .so）"
+# 以前只收 native-mods.json 里列的 2 个 .so（8 MB），本机还得自己下 SDK 补齐 330 MB
+# 引擎库、再复制 1 GB 骨架才能玩。现在把 built 目录相对 base 的**全部增量**都收进来：
+# 下下来解开跑 install-native-build.sh，复制 base、覆盖、touch .installed，就完事，
+# 本机既不下载 SDK 也不编译。.local/ 是首次启动可重建的资源缓存（693 MB），不带。
+PKG=$OUT/pkg
+BASE_DIR=$HORIZON_LAUNCHER_HOME/versions/$INSTALLED
+[ -d "$BASE_DIR" ] || die "找不到 base 目录 $BASE_DIR，无法算增量"
+rm -rf "$PKG"
+mkdir -p "$PKG/payload"
+
+BASE_DIR="$BASE_DIR" LOD_PORTED="${LOD_PORTED:-0}" python3 - \
+  "$BUILT" "$PKG" "$COMMIT" "$MIXINS" "$SHORT" "$MOD_VERSION" \
   "$INSTALLED" "$MOD_REPO" "$MOD_REF" "$NIGHTLY_TAG" "$LAUNCHER_TAG" "$WORK" \
   "$EXPECTED_SHA256" "${PIN_COMMIT:-}" "$ORIG_COMMIT" "${INSTALL_TAG:-$NIGHTLY_TAG}" <<'PY'
-import hashlib, json, pathlib, shutil, sys, time
-built, out, commit, mixins, short, modver, version, repo, ref, nightly, launcher, work = sys.argv[1:13]
-built, out = pathlib.Path(built), pathlib.Path(out)
+import hashlib, json, os, pathlib, shutil, sys, time
+built, pkg, commit, mixins, short, modver, version, repo, ref, nightly, launcher, work = sys.argv[1:13]
+built, pkg = pathlib.Path(built), pathlib.Path(pkg)
+payload = pkg / 'payload'
+base = pathlib.Path(os.environ['BASE_DIR'])
 record = json.loads((built / 'native-mods.json').read_text())
 
 problems = []
@@ -252,10 +271,10 @@ for lib in record['libraries']:
         problems.append(f"{lib['file']} sha256 与清单不符：{digest}")
     if not lib.get('identity', '').startswith(commit):
         problems.append(f"{lib['file']} identity 不是这个 commit：{lib.get('identity')}")
-    shutil.copy2(src, out / lib['file'])
+    shutil.copy2(src, payload / lib['file'])
     lines.append(f"{lib['kind']:6s} {lib['file']:44s} {digest}")
     print(f"  {lib['kind']:6s} {lib['file']:44s} {src.stat().st_size / 1e6:6.1f} MB  {digest[:12]}")
-shutil.copy2(built / 'native-mods.json', out / 'native-mods.json')
+shutil.copy2(built / 'native-mods.json', payload / 'native-mods.json')
 
 # 与本机那一版比对。注意**字节不会相同**：.so 里嵌了构建哈希目录名
 # （native/prebuilt-build/rustc-<commit>-<hash>/），换台机器这个 hash 就变，
@@ -269,7 +288,53 @@ if expected and mod:
     print('  与本机旧产物逐字节相同' if same
           else '  与本机旧产物字节不同（正常：.so 内嵌构建哈希目录名，identity 已校验一致）')
 
-(out / 'BUILD.txt').write_text('\n'.join(lines) + '\n')
+# 相对 base 的增量：9 个引擎 / 运行时 .so（330 MB，SDK 预先构建的，不是这次编的）、
+# horizon-native-mods/<id>/ 源码副本，都在这。.local/ 是首次启动会自己重建的资源缓存
+# （693 MB），.installed / .last-used 是本地标记，三者都不带。
+skip = {'.local', '.installed', '.last-used'}
+extra = sorted(set(os.listdir(built)) - set(os.listdir(base)) - skip)
+for name in extra:
+    src = built / name
+    if src.is_dir():
+        shutil.copytree(src, payload / name, dirs_exist_ok=True)
+    else:
+        shutil.copy2(src, payload / name)
+
+# 逐文件清单：安装脚本按它校验覆盖结果，缺一个或哈希不符就报错。
+entries = []
+for path in sorted(payload.rglob('*')):
+    if not path.is_file():
+        continue
+    entries.append({
+        'name': str(path.relative_to(payload)).replace(os.sep, '/'),
+        'size': path.stat().st_size,
+        'sha256': hashlib.sha256(path.read_bytes()).hexdigest(),
+    })
+total = sum(e['size'] for e in entries)
+print(f'  增量 {len(extra)} 项 / {len(entries)} 个文件 / {total / 1e6:.0f} MB')
+
+manifest = {
+    'native_version': built.name,
+    'base': version,
+    'horizon': commit,
+    'horizon_mixins': mixins,
+    'rust': record.get('rust'),
+    'profile': record.get('profile'),
+    'mod': {
+        'repo': repo,
+        'ref': ref,
+        'version': record['mods'][0]['version'] if record.get('mods') else modver,
+    },
+    'lod_port': os.environ.get('LOD_PORTED') == '1',
+    'built_by': f'launcher {launcher}',
+    'built_at': time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime()),
+    'payload': entries,
+}
+(pkg / 'manifest.json').write_text(json.dumps(manifest, indent=1) + '\n')
+lines.append(f"payload    {len(entries)} 个文件 / {total / 1e6:.0f} MB"
+             f"（含 SDK 的引擎 .so，不带 .local 资源缓存）")
+
+(pkg / 'BUILD.txt').write_text('\n'.join(lines) + '\n')
 if problems:
     print('\n'.join('!! ' + p for p in problems), file=sys.stderr)
     sys.exit(1)
@@ -277,12 +342,16 @@ PY
 
 if [ "${LOD_PORTED:-0}" = 1 ]; then
   printf 'lod-port   lod_adapter 改走 Lod::surface（%s 的 tile 是 span 压缩的 TileColumns）\n' \
-    "$SHORT" >> "$OUT/BUILD.txt"
+    "$SHORT" >> "$PKG/BUILD.txt"
 fi
 
-# 上面 python 的 EXPECTED_SHA256 / STRICT 来自环境变量，随参数传入
-TARBALL=$OUT/horizon-native-mod-${MOD_VERSION}-${SHORT}.tar.gz
-tar -czf "$TARBALL" -C "$OUT" $(cd "$OUT" && ls lib*.so native-mods.json BUILD.txt)
+# 安装脚本随包发：本机解开就能组装，不用记 base 目录、目录名哈希、.installed 这些约定。
+install -m 755 "$ROOT/tools/ci/install-native-build.sh" "$PKG/install-native-build.sh"
+
+TARBALL=$OUT/horizon-native-full-${MOD_VERSION}-${SHORT}.tar.gz
+tar -czf "$TARBALL" -C "$PKG" .
 ( cd "$OUT" && sha256sum "$(basename "$TARBALL")" > "$(basename "$TARBALL").sha256" )
 
 printf '\n完成：%s（%.1f MB）\n' "$TARBALL" "$(stat -c %s "$TARBALL" | awk '{print $1/1e6}')"
+printf '用法：mkdir /tmp/nf && tar -xf %s -C /tmp/nf && bash /tmp/nf/install-native-build.sh\n' \
+  "$(basename "$TARBALL")"
