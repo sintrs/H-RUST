@@ -43,6 +43,13 @@ jobs:
         with:
           python-version: '3.12'
 
+      # native-build 会用启动器自带的 rust 编 wgpu/winits 那一套，它们要 ALSA 与 udev 的头文件；
+      # runner 镜像里只有运行库，没有 -dev。缺了会在第 8 步直接报 "this computer lacks them"。
+      - name: System libraries the build links against
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq --no-install-recommends libasound2-dev libudev-dev pkg-config
+
       - name: Build
         run: bash tools/ci/build-native-mod.sh dist-native
 
