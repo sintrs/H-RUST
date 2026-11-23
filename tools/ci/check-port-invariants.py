@@ -185,6 +185,15 @@ def main() -> int:
     print("== 3. the bundled-build installer's assumptions (`horizon_bundle.rs`) ==")
     backend = read(root, "launcher/src/backend.rs")
     if backend:
+        # Upstream split `Settings` out of backend.rs into backend/settings.rs (2026-11-22,
+        # launcher@0.2.107) and re-exports it as `backend::Settings`, so the struct itself is no
+        # longer in this file. Search both, so the contract holds whether or not the split stays.
+        settings_rs = root / "launcher/src/backend/settings.rs"
+        settings_text = (
+            backend + "\n" + settings_rs.read_text(encoding="utf-8", errors="replace")
+            if settings_rs.is_file()
+            else backend
+        )
         need(
             "backend::COMPLETE is still \".installed\"",
             backend,
@@ -207,13 +216,13 @@ def main() -> int:
         )
         need(
             "Settings still has `selected` and `install_new_versions`",
-            backend,
+            settings_text,
             r"pub struct Settings \{\s*\n\s*pub selected: Option<String>,",
             "horizon_bundle sets both on first start",
         )
         need(
             "Settings.install_new_versions is Option<bool>",
-            backend,
+            settings_text,
             r"pub install_new_versions: Option<bool>,",
             "the package writes Some(false); a plain bool would need a different write",
         )
