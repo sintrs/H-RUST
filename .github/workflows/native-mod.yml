@@ -44,6 +44,12 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # 3.12 才有 tomllib：脚本读 horizon-mod.toml、mod 的 package.py 都要它。
+      # 22.04 runner 自带的是 3.10，不指定会 ModuleNotFoundError。
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
       - name: Build
         run: bash tools/ci/build-native-mod.sh dist-native
 

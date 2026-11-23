@@ -82,6 +82,8 @@ PY
 )
 EOF
 SHORT=${COMMIT:0:7}
+# tomllib 要 python 3.11+；Ubuntu 22.04 自带的 3.10 没有它，workflow 里用 setup-python 指定 3.12。
+[ -n "$COMMIT" ] && [ -n "$SHORT" ] || die "读不到 pin（python3 需要 3.11+，tomllib）"
 printf '  commit   %s\n  mixins   %s\n  版本      %s\n  mod      %s\n' \
   "$COMMIT" "$MIXINS" "$NIGHTLY_VERSION" "$MOD_VERSION"
 
