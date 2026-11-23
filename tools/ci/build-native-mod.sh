@@ -14,12 +14,16 @@
 #   NIGHTLY_TAG      nightly-2026-11-20   install 用的 release tag
 #   LAUNCHER_TAG     launcher@0.2.107     提供 native-build 的官方 AppImage
 #   WORK             build/native-mod     下载、解包、临时家目录都在这
-#   EXPECTED_SHA256  给了就比对 libminimap_*.so；默认不因此失败（STRICT=1 才失败）
+#   EXPECTED_SHA256  给了就报告与本机那版的字节差异（仅供参考，不作为失败条件：
+#                   .so 里嵌了构建哈希目录名，换机器必然不同）
+#
+# 不需要 Minecraft、不需要 Java、不需要账号：native-build 要的“已准备”只是一个清单文件，
+# 见第 5 步。编译只读 SDK 的 rmeta 与 mod 源码，818 MB 的游戏资源只供运行游戏用。
 #
 # 产物（<输出目录>，顶层平铺，不套目录）：
 #   libminimap_worldmap_waypoints_reworked.so   2.9 M  mod 本体
 #   libhorizon_patch.so                         5.2 M  打了 mixins 的游戏补丁
-#   native-mods.json                            清单，sha256 / identity 都是现算的
+#   native-mods.json                            启动器自己写的清单（sha256 / identity）
 #   BUILD.txt                                   这一包对应的 pin 与校验和
 # 以及同名 .tar.gz。放进已有的 native-<commit>-<hash>/ 即可替换，无需重编。
 set -euo pipefail
@@ -30,7 +34,6 @@ NIGHTLY_TAG=${NIGHTLY_TAG:-nightly-2026-11-20}
 LAUNCHER_TAG=${LAUNCHER_TAG:-launcher@0.2.107}
 WORK=${WORK:-build/native-mod}
 EXPECTED_SHA256=${EXPECTED_SHA256:-}
-STRICT=${STRICT:-0}
 
 OUT=${1:-dist-native}
 mkdir -p "$WORK" "$OUT"
@@ -40,7 +43,7 @@ OUT=$(cd "$OUT" && pwd)
 step() { printf '\n=== %s ===\n' "$*"; }
 die() { printf '\n!! %s\n' "$*" >&2; exit 1; }
 
-step "1/8 官方 launcher（native-build 在它里面）"
+step "1/9 官方 launcher（native-build 在它里面）"
 APP=$WORK/launcher/horizon-launcher-linux-x86_64.AppImage
 if [ ! -s "$APP" ]; then
   mkdir -p "$WORK/launcher"
@@ -54,7 +57,7 @@ fi
 L=$WORK/launcher/squashfs-root/usr/bin/horizon-launcher
 "$L" --version 2>/dev/null || true
 
-step "2/8 mod 源（${MOD_REPO}@${MOD_REF}）"
+step "2/9 mod 源（${MOD_REPO}@${MOD_REF}）"
 MODDIR=$WORK/mod
 if [ ! -f "$MODDIR/horizon-mod.toml" ]; then
   rm -rf "$MODDIR"; mkdir -p "$MODDIR"
@@ -66,7 +69,7 @@ if [ ! -f "$MODDIR/horizon-mod.toml" ]; then
 fi
 [ -f "$MODDIR/horizon-mod.toml" ] || die "mod 源不完整：$MODDIR"
 
-step "3/8 读 pin（commit / mixins / 版本名）"
+step "3/9 读 pin（commit / mixins / 版本名）"
 read -r COMMIT MIXINS NIGHTLY_VERSION MOD_VERSION <<EOF
 $(python3 - "$MODDIR" <<'PY'
 import json, sys, tomllib
@@ -87,7 +90,7 @@ SHORT=${COMMIT:0:7}
 printf '  commit   %s\n  mixins   %s\n  版本      %s\n  mod      %s\n' \
   "$COMMIT" "$MIXINS" "$NIGHTLY_VERSION" "$MOD_VERSION"
 
-step "4/8 装 pinned nightly（隔离家目录，不碰已有的）"
+step "4/9 装 pinned nightly（隔离家目录，不碰已有的）"
 export HORIZON_LAUNCHER_HOME=$WORK/home-launcher
 export HORIZON_HOME=$WORK/home-game
 mkdir -p "$HORIZON_LAUNCHER_HOME" "$HORIZON_HOME"
@@ -102,7 +105,20 @@ case "$INSTALLED" in
   *) die "装到的 $INSTALLED 与 pin 的 $SHORT 不符" ;;
 esac
 
-step "5/8 建实例（native-build 挂在实例上）"
+step "5/9 满足 prepared 前置条件（只要一个清单文件）"
+# native-build 进 pipeline 第一件事是 backend::ready() -> check_prepared() -> prepared_at()，
+# 而 prepared_at() 只做两件事：资源目录里有能解析的 horizon-resources.json，且顶层没有
+# 0 字节的 .json。编译本身只读 SDK 的 rmeta 和 mod 源码，一个字都不读游戏资源——所以这里
+# 写个空清单就够了，不必准备那 818 MB（省掉 Mojang jar 下载、Java 25 和几分钟反编译）。
+VDIR=$HORIZON_LAUNCHER_HOME/versions/$INSTALLED
+MC_VERSION=$(python3 -c "import json,sys;print(json.load(open(sys.argv[1]))['minecraft']['version'])" \
+  "$VDIR/research-lock.json" 2>/dev/null || echo 26.3)
+RES=$VDIR/.local/horizon-client/$MC_VERSION
+mkdir -p "$RES"
+printf '{}\n' > "$RES/horizon-resources.json"
+echo "  $RES/horizon-resources.json（$(stat -c %s "$RES/horizon-resources.json") B，版本 $MC_VERSION 取自 research-lock.json）"
+
+step "6/9 建实例（native-build 挂在实例上）"
 # 注意 `|| true`：instances/ 还不存在时 find 返回 1，set -e + pipefail 会整步退出。
 INSTANCE=$(find "$HORIZON_HOME/instances" -maxdepth 1 -mindepth 1 -type d -printf '%f\n' 2>/dev/null | head -1 || true)
 if [ -z "$INSTANCE" ]; then
@@ -112,12 +128,12 @@ fi
 [ -n "$INSTANCE" ] || die "没建出实例：$HORIZON_HOME/instances"
 echo "  实例 $INSTANCE"
 
-step "6/8 生成扁平工程（mod 仓库自己的 package.py，不是我们猜的布局）"
+step "7/9 生成扁平工程（mod 仓库自己的 package.py，不是我们猜的布局）"
 ( cd "$MODDIR" && python3 tools/package.py --project target/ci-project > "$WORK/package.json" )
 PROJECT=$MODDIR/target/ci-project
 [ -f "$PROJECT/src/lib.rs" ] || die "扁平工程没生成：$PROJECT"
 
-step "7/8 编译（启动器自己的 Rust 与 SDK，profile=optimized）"
+step "8/9 编译（启动器自己的 Rust 与 SDK，profile=optimized）"
 "$L" native-build "$PROJECT" \
   --instance "$INSTANCE" \
   --version "$INSTALLED" \
@@ -127,10 +143,10 @@ step "7/8 编译（启动器自己的 Rust 与 SDK，profile=optimized）"
 BUILT=$(ls -td "$HORIZON_LAUNCHER_HOME"/versions/native-* 2>/dev/null | head -1 || true)
 [ -n "$BUILT" ] || die "没找到 native-* 产物目录"
 
-step "8/8 收集与校验"
+step "9/9 收集与校验"
 python3 - "$BUILT" "$OUT" "$COMMIT" "$MIXINS" "$SHORT" "$MOD_VERSION" \
   "$INSTALLED" "$MOD_REPO" "$MOD_REF" "$NIGHTLY_TAG" "$LAUNCHER_TAG" "$WORK" \
-  "$EXPECTED_SHA256" "$STRICT" <<'PY'
+  "$EXPECTED_SHA256" <<'PY'
 import hashlib, json, pathlib, shutil, sys, time
 built, out, commit, mixins, short, modver, version, repo, ref, nightly, launcher, work = sys.argv[1:13]
 built, out = pathlib.Path(built), pathlib.Path(out)
@@ -162,15 +178,17 @@ for lib in record['libraries']:
     print(f"  {lib['kind']:6s} {lib['file']:44s} {src.stat().st_size / 1e6:6.1f} MB  {digest[:12]}")
 shutil.copy2(built / 'native-mods.json', out / 'native-mods.json')
 
-# 与已知可用的那一版比对（informational；STRICT=1 才算失败）
-expected, strict = sys.argv[13], sys.argv[14] == '1'
+# 与本机那一版比对。注意**字节不会相同**：.so 里嵌了构建哈希目录名
+# （native/prebuilt-build/rustc-<commit>-<hash>/），换台机器这个 hash 就变，
+# 实测同一份源码本机编出来 3013560 B，隔离环境重编 3014088 B，identity 一致。
+# 所以这里只报告，判合格靠上面那些 identity / 清单校验。
+expected = sys.argv[13]
 mod = next((l for l in record['libraries'] if l['kind'] == 'mod'), None)
 if expected and mod:
     same = mod['sha256'] == expected
-    lines.append(f"expected {expected}  match={same}")
-    print(('  相符 ' if same else '  不一致 ') + f"本机旧产物 {expected[:12]} vs 这次 {mod['sha256'][:12]}")
-    if not same and strict:
-        problems.append("sha256 与本机那一版不一致（STRICT=1）")
+    lines.append(f"reference {expected}  byte-identical={same}")
+    print('  与本机旧产物逐字节相同' if same
+          else '  与本机旧产物字节不同（正常：.so 内嵌构建哈希目录名，identity 已校验一致）')
 
 (out / 'BUILD.txt').write_text('\n'.join(lines) + '\n')
 if problems:

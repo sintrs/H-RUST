@@ -8,10 +8,6 @@ name: Build minimap native mod
 on:
   workflow_dispatch:
     inputs:
-      strict:
-        description: 'mod .so 的 sha256 与本机已知那版不一致时直接失败'
-        type: boolean
-        default: false
       mod_ref:
         description: 'mod 源（tag 或 commit）；默认 v0.7.9，其 [native] 已 pin 本次 nightly'
         default: v0.7.9
@@ -37,9 +33,6 @@ jobs:
       MOD_REF: ${{ inputs.mod_ref || 'v0.7.9' }}
       NIGHTLY_TAG: nightly-2026-11-20
       LAUNCHER_TAG: launcher@0.2.107
-      # 本机 native-0a875da-22680d1991ba 里 libminimap_...so 的 sha256
-      EXPECTED_SHA256: 41700c17c172835647cfa7cd10b603023c9a4074c2035dbc2c93d21da2430db9
-      STRICT: ${{ inputs.strict && '1' || '0' }}
       WORK: ${{ github.workspace }}/build/native-mod
     steps:
       - uses: actions/checkout@v4
