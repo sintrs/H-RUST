@@ -11,6 +11,15 @@ on:
       mod_ref:
         description: 'mod 源（tag 或 commit）；默认 v0.7.9，其 [native] 已 pin 本次 nightly'
         default: v0.7.9
+      pin_commit:
+        description: '把 mod 的 pin 改到这个上游 commit 再编（留空 = 用 mod 自己 pin 的）'
+        default: ''
+      pin_nightly:
+        description: '该 commit 的安装版本名，如 nightly-2026-11-22-f1bb66f'
+        default: ''
+      install_tag:
+        description: '装哪个 release tag；比带日期的 tag 更新的构建只在滚动 tag nightly 里'
+        default: ''
   push:
     paths:
       - tools/ci/build-native-mod.sh
@@ -31,6 +40,9 @@ jobs:
     timeout-minutes: 90
     env:
       MOD_REF: ${{ inputs.mod_ref || 'v0.7.9' }}
+      PIN_COMMIT: ${{ inputs.pin_commit }}
+      PIN_NIGHTLY: ${{ inputs.pin_nightly }}
+      INSTALL_TAG: ${{ inputs.install_tag }}
       NIGHTLY_TAG: nightly-2026-11-20
       LAUNCHER_TAG: launcher@0.2.107
       WORK: ${{ github.workspace }}/build/native-mod

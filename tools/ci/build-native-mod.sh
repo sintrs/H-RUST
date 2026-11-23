@@ -14,6 +14,12 @@
 #   NIGHTLY_TAG      nightly-2026-11-20   install 用的 release tag
 #   LAUNCHER_TAG     launcher@0.2.107     提供 native-build 的官方 AppImage
 #   WORK             build/native-mod     下载、解包、临时家目录都在这
+#   PIN_COMMIT       给了就把 mod 的 pin 改到这个上游 commit，再照它编
+#                    （例：f1bb66f353cf67f2aa4665293fc75c8d91186fc7）
+#   PIN_NIGHTLY      配合 PIN_COMMIT：该 commit 的安装版本名，同时作为 native 版本的 base
+#                    （例：nightly-2026-11-22-f1bb66f）
+#   INSTALL_TAG      装哪个 release tag；默认 NIGHTLY_TAG。比带日期的 tag 更新的构建
+#                    只在滚动 tag `nightly` 里，会随时被顶掉
 #   EXPECTED_SHA256  给了就报告与本机那版的字节差异（仅供参考，不作为失败条件：
 #                   .so 里嵌了构建哈希目录名，换机器必然不同）
 #
@@ -84,19 +90,57 @@ print(compat['horizon_revision'], compat['horizon_mixins_revision'],
 PY
 )
 EOF
+ORIG_COMMIT=$COMMIT
 SHORT=${COMMIT:0:7}
 # tomllib 要 python 3.11+；Ubuntu 22.04 自带的 3.10 没有它，workflow 里用 setup-python 指定 3.12。
 [ -n "$COMMIT" ] && [ -n "$SHORT" ] || die "读不到 pin（python3 需要 3.11+，tomllib）"
 printf '  commit   %s\n  mixins   %s\n  版本      %s\n  mod      %s\n' \
   "$COMMIT" "$MIXINS" "$NIGHTLY_VERSION" "$MOD_VERSION"
 
+# 换一个 nightly 编：mod 的 [native] 写死了 commit，native-build 遇到别的 revision 会直接
+# 拒绝（"Made for other Horizon versions"）。这里就地改掉两份 pin，源码一行不动——上游
+# 从 0a875da 到 f1bb66f 的 API surface 在 sdk.json 里一路标 additive（只加不删），所以老源码
+# 能对着新 SDK 编。compatibility.json 的 source_sha256 是上游源文件哈希，只有 mod 自己的
+# audit 用，启动器一个字节都不读，这里保持原值并在 BUILD.txt 里记一笔。
+INSTALL_TAG=${INSTALL_TAG:-$NIGHTLY_TAG}
+if [ -n "${PIN_COMMIT:-}" ] && [ "$PIN_COMMIT" != "$COMMIT" ]; then
+  PIN_NIGHTLY=${PIN_NIGHTLY:-$NIGHTLY_VERSION}
+  echo "  改 pin：$COMMIT → $PIN_COMMIT（$PIN_NIGHTLY）"
+  python3 - "$MODDIR" "$PIN_COMMIT" "$MIXINS" "$PIN_NIGHTLY" <<'PY' || die "改 pin 失败"
+import json, pathlib, re, sys
+root, commit, mixins, nightly = pathlib.Path(sys.argv[1]), sys.argv[2], sys.argv[3], sys.argv[4]
+toml = root / 'horizon-mod.toml'
+text = toml.read_text()
+block = text.split('\n[native]\n', 1)
+if len(block) != 2:
+    raise SystemExit('horizon-mod.toml 里没有 [native] 段')
+body = block[1]
+for key, value in (('horizon', commit), ('mixins', mixins)):
+    body, count = re.subn(rf'(?m)^{key}\s*=\s*"[^"]*"', f'{key} = "{value}"', body, count=1)
+    if not count:
+        raise SystemExit(f'[native] 段里没有 {key}')
+toml.write_text(block[0] + '\n[native]\n' + body)
+compat = json.loads((root / 'compatibility.json').read_text())
+compat['horizon_revision'] = commit
+compat['horizon_mixins_revision'] = mixins
+compat['nightly_version'] = nightly
+(root / 'compatibility.json').write_text(json.dumps(compat, indent=2) + '\n')
+print(f'  pin 已改为 {commit[:7]} / {mixins[:7]} / {nightly}')
+PY
+  COMMIT=$PIN_COMMIT
+  SHORT=${COMMIT:0:7}
+  NIGHTLY_VERSION=$PIN_NIGHTLY
+fi
+INSTALLED=$NIGHTLY_VERSION
+
 step "4/9 装 pinned nightly（隔离家目录，不碰已有的）"
 export HORIZON_LAUNCHER_HOME=$WORK/home-launcher
 export HORIZON_HOME=$WORK/home-game
 mkdir -p "$HORIZON_LAUNCHER_HOME" "$HORIZON_HOME"
-INSTALLED=${NIGHTLY_VERSION}
 if [ ! -d "$HORIZON_LAUNCHER_HOME/versions/$INSTALLED" ]; then
-  "$L" install "$NIGHTLY_TAG"
+  # 带日期的 release tag 只能指到一个 commit（nightly-2026-11-22 是 2b77287）；
+  # 比它更新的构建（f1bb66f）只在滚动 tag `nightly` 里，会随时被下一版顶掉。
+  "$L" install "$INSTALL_TAG"
 fi
 [ -d "$HORIZON_LAUNCHER_HOME/versions/$INSTALLED" ] || \
   die "装出来的版本不是 $INSTALLED：$(ls "$HORIZON_LAUNCHER_HOME/versions" 2>/dev/null | tr '\n' ' ')"
@@ -146,7 +190,7 @@ BUILT=$(ls -td "$HORIZON_LAUNCHER_HOME"/versions/native-* 2>/dev/null | head -1 
 step "9/9 收集与校验"
 python3 - "$BUILT" "$OUT" "$COMMIT" "$MIXINS" "$SHORT" "$MOD_VERSION" \
   "$INSTALLED" "$MOD_REPO" "$MOD_REF" "$NIGHTLY_TAG" "$LAUNCHER_TAG" "$WORK" \
-  "$EXPECTED_SHA256" <<'PY'
+  "$EXPECTED_SHA256" "${PIN_COMMIT:-}" "$ORIG_COMMIT" "${INSTALL_TAG:-$NIGHTLY_TAG}" <<'PY'
 import hashlib, json, pathlib, shutil, sys, time
 built, out, commit, mixins, short, modver, version, repo, ref, nightly, launcher, work = sys.argv[1:13]
 built, out = pathlib.Path(built), pathlib.Path(out)
@@ -163,6 +207,13 @@ lines = [f"built by launcher {launcher} on {time.strftime('%Y-%m-%d %H:%M:%S %Z'
          f"horizon    {commit}", f"mixins     {mixins}",
          f"nightly    {version}", f"base       {record.get('base')}",
          f"rust       {record.get('rust')}  route={record.get('route')}  secs={record.get('secs')}", ""]
+repin, original, install_tag = sys.argv[14], sys.argv[15], sys.argv[16]
+if repin and repin != original:
+    lines.append(f"repin      mod 的 pin 从 {original} 改到 {repin}")
+    lines.append("           源码一行未动；compatibility.json 的 source_sha256 未重算"
+                 "（启动器不读，只有 mod 自己的 audit 用）")
+lines.append(f"installed  from release tag {install_tag}")
+
 for lib in record['libraries']:
     src = built / lib['file']
     if not src.is_file():
