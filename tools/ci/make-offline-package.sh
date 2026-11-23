@@ -105,6 +105,22 @@ fi
 # 普通版本目录：启动器靠 .installed 认出"已安装"，靠目录名当 tag。
 : > "$VERSIONS/.installed"
 
+# native 版本默认记着它是从哪个 nightly 构建来的（native-mods.json 的 base），启动器
+# 会先要求那个版本还装着（backend.rs 的 ready()）。包里不带那个底座，所以把它改成
+# 自己：资源、.installed、prepared 标记都在本目录里，ready() 就查自己并通过。
+# 第一次启动由启动器在本目录里重建 .local（原来那 800 MB 缓存的落点从底座移到了这里）。
+if [[ -f "$VERSIONS/native-mods.json" ]]; then
+  echo "==> native 版本自带底座：base 指向 $TAG"
+  python3 - "$VERSIONS/native-mods.json" "$TAG" <<'PY'
+import json, sys
+path, tag = sys.argv[1], sys.argv[2]
+record = json.load(open(path))
+record["base"] = tag
+with open(path, "w") as out:
+    json.dump(record, out, ensure_ascii=False, separators=(",", ":"))
+PY
+fi
+
 CLIENT="$VERSIONS/horizon-client"
 [[ -f "$CLIENT" ]] || { echo "错误：版本目录里没有 horizon-client" >&2; exit 1; }
 chmod +x "$CLIENT"
@@ -124,12 +140,15 @@ Launcher:   built from the same upstream source with the offline account patch
 Nothing is compiled on your side: the mod ships as a .so built against this exact
 build ($SHORT), so the launcher takes it as-is instead of rebuilding it.
 
+This package stands on its own: the bundled version records itself as its own base,
+so no other nightly has to be installed beside it.
+
 How to play
 -----------
 1. Open ./horizon-launcher (double-click it).
    The first start copies the bundled build into the launcher data folder and
    selects it -- after that just click the launcher's icon. The first start also
-   rebuilds the ~800 MB asset cache, so give it a minute.
+   rebuilds the asset cache inside that version folder (~800 MB, about a minute).
 2. Your offline name: Settings -> Account -> "Play offline", type a name (3 to 16
    letters, digits or _) and press Enter. From a terminal, the same:
        ./horizon-launcher account offline YourName
