@@ -291,14 +291,63 @@ if expected and mod:
 # 相对 base 的增量：9 个引擎 / 运行时 .so（330 MB，SDK 预先构建的，不是这次编的）、
 # horizon-native-mods/<id>/ 源码副本，都在这。.local/ 是首次启动会自己重建的资源缓存
 # （693 MB），.installed / .last-used 是本地标记，三者都不带。
+#
+# 判据是「base 没有 或 内容变了」，不能只比名字 —— native-build 会把 horizon-client
+# 从 nightly 那份 166 MB 原版二进制换成 7.5 KB 的 horizon_native_game 入口（内嵌
+# HOLDER_CAPABILITY，NEEDED $ORIGIN/libhorizon_mod_host.so，游戏本体在 mod_host.so 里）。
+# 两边同名，只比名字就会漏掉这个替换：装出来跑的是没打补丁的原版，mod 静默不生效。
 skip = {'.local', '.installed', '.last-used'}
-extra = sorted(set(os.listdir(built)) - set(os.listdir(base)) - skip)
+
+def listing(root):
+    """相对路径 → 字节数。目录递归，给一次快速判等用。"""
+    out = {}
+    for dirpath, _, filenames in os.walk(root):
+        for f in filenames:
+            p = pathlib.Path(dirpath) / f
+            out[str(p.relative_to(root)).replace(os.sep, '/')] = p.stat().st_size
+    return out
+
+def same_file(a, b):
+    if a.stat().st_size != b.stat().st_size:
+        return False
+    return hashlib.sha256(a.read_bytes()).digest() == hashlib.sha256(b.read_bytes()).digest()
+
+base_names = set(os.listdir(base))
+added, replaced = [], []
+for name in sorted(set(os.listdir(built)) - skip):
+    src, dst = built / name, base / name
+    if name not in base_names:
+        added.append(name)
+    elif src.is_dir() != dst.is_dir():
+        replaced.append(name)
+    elif src.is_file():
+        if not same_file(src, dst):
+            replaced.append(name)
+    else:
+        mine, theirs = listing(src), listing(dst)
+        if mine != theirs:
+            replaced.append(name)
+        else:
+            # 清单（路径+大小）一致再逐个比内容，防止同大小不同内容
+            for rel in mine:
+                if not same_file(src / rel, dst / rel):
+                    replaced.append(name)
+                    break
+extra = added + replaced
 for name in extra:
     src = built / name
     if src.is_dir():
         shutil.copytree(src, payload / name, dirs_exist_ok=True)
     else:
         shutil.copy2(src, payload / name)
+if replaced:
+    print(f'  同名替换 {len(replaced)} 项：{", ".join(replaced)}')
+    for name in replaced:
+        a, b = base / name, built / name
+        if a.is_file() and b.is_file():
+            print(f'    {name:14s} {a.stat().st_size:>12,} → {b.stat().st_size:>10,} B')
+        else:
+            print(f'    {name:14s} 目录内容有变化')
 
 # 逐文件清单：安装脚本按它校验覆盖结果，缺一个或哈希不符就报错。
 entries = []
@@ -311,7 +360,8 @@ for path in sorted(payload.rglob('*')):
         'sha256': hashlib.sha256(path.read_bytes()).hexdigest(),
     })
 total = sum(e['size'] for e in entries)
-print(f'  增量 {len(extra)} 项 / {len(entries)} 个文件 / {total / 1e6:.0f} MB')
+print(f'  增量 {len(extra)} 项（新增 {len(added)}、同名替换 {len(replaced)}）'
+      f' / {len(entries)} 个文件 / {total / 1e6:.0f} MB')
 
 manifest = {
     'native_version': built.name,
@@ -326,6 +376,7 @@ manifest = {
         'version': record['mods'][0]['version'] if record.get('mods') else modver,
     },
     'lod_port': os.environ.get('LOD_PORTED') == '1',
+    'replaced': replaced,
     'built_by': f'launcher {launcher}',
     'built_at': time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime()),
     'payload': entries,
@@ -333,6 +384,8 @@ manifest = {
 (pkg / 'manifest.json').write_text(json.dumps(manifest, indent=1) + '\n')
 lines.append(f"payload    {len(entries)} 个文件 / {total / 1e6:.0f} MB"
              f"（含 SDK 的引擎 .so，不带 .local 资源缓存）")
+if replaced:
+    lines.append(f"replaced   {' '.join(replaced)}（与 base 同名但内容不同，已在 payload 里）")
 
 (pkg / 'BUILD.txt').write_text('\n'.join(lines) + '\n')
 if problems:
