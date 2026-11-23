@@ -1,5 +1,5 @@
 diff --git a/launcher/Cargo.lock b/launcher/Cargo.lock
-index 461b5a5..9cbbb5a 100644
+index 53e953c..9ebe26a 100644
 --- a/launcher/Cargo.lock
 +++ b/launcher/Cargo.lock
 @@ -3100,7 +3100,7 @@ version = "0.1.0"
@@ -12,7 +12,7 @@ index 461b5a5..9cbbb5a 100644
   "base64 0.22.1",
   "cap-fs-ext",
 diff --git a/launcher/Cargo.toml b/launcher/Cargo.toml
-index f32760e..ee38957 100644
+index 56ebb6c..0b5eecc 100644
 --- a/launcher/Cargo.toml
 +++ b/launcher/Cargo.toml
 @@ -1,6 +1,7 @@
@@ -277,10 +277,10 @@ index 14b0d21..507655e 100644
      // An accounts.json written now has nothing but the accounts and who plays.
      assert_eq!(
 diff --git a/launcher/src/backend.rs b/launcher/src/backend.rs
-index 1cde630..c7d3675 100644
+index 532d18b..bb78bb5 100644
 --- a/launcher/src/backend.rs
 +++ b/launcher/src/backend.rs
-@@ -3452,7 +3452,9 @@ fn launcher_asset_running_from(appimage: bool) -> Option<&'static str> {
+@@ -3730,7 +3730,9 @@ fn launcher_asset_running_from(appimage: bool) -> Option<&'static str> {
  
  /// Development builds and `HORIZON_LAUNCHER_NO_SELF_UPDATE` never replace themselves.
  pub fn self_update_allowed() -> bool {
@@ -307,7 +307,7 @@ index 49ab979..14dc9b0 100644
          if let Some(e) = session.offline {
              eprintln!("Playing offline: {e}");
 diff --git a/launcher/src/cli.rs b/launcher/src/cli.rs
-index dc0afba..f95d75d 100644
+index d17c41a..557508e 100644
 --- a/launcher/src/cli.rs
 +++ b/launcher/src/cli.rs
 @@ -140,8 +140,13 @@ enum AccountCmd {
@@ -325,7 +325,7 @@ index dc0afba..f95d75d 100644
  }
  
  #[derive(Subcommand)]
-@@ -1978,13 +1983,17 @@ fn account_command(action: AccountCmd, as_json: bool) -> Result<(), String> {
+@@ -1997,13 +2002,17 @@ fn account_command(action: AccountCmd, as_json: bool) -> Result<(), String> {
                          "selected": accounts.selected.as_ref() == Some(&a.uuid),
                          "authentication": account::session::status(account::store(), &a.uuid),
                      })).collect::<Vec<_>>(),
@@ -346,7 +346,7 @@ index dc0afba..f95d75d 100644
                  );
              } else {
                  for a in &accounts.accounts {
-@@ -2001,7 +2010,11 @@ fn account_command(action: AccountCmd, as_json: bool) -> Result<(), String> {
+@@ -2020,7 +2029,11 @@ fn account_command(action: AccountCmd, as_json: bool) -> Result<(), String> {
                      };
                      println!("{mark} {}  {}  {}{why}", a.name, a.uuid, status.label());
                  }
@@ -359,7 +359,7 @@ index dc0afba..f95d75d 100644
                      println!(
                          "{} {}",
                          account::NoOwner::default(),
-@@ -2084,10 +2097,39 @@ fn account_command(action: AccountCmd, as_json: bool) -> Result<(), String> {
+@@ -2103,10 +2116,39 @@ fn account_command(action: AccountCmd, as_json: bool) -> Result<(), String> {
              println!("Signed out {}.", a.name);
          }
          AccountCmd::Select { who } => {
@@ -403,7 +403,7 @@ index dc0afba..f95d75d 100644
      }
      Ok(())
 diff --git a/launcher/src/developer_offline.rs b/launcher/src/developer_offline.rs
-index 2a93c35..ba8c747 100644
+index 3d8f9a9..8b01c8c 100644
 --- a/launcher/src/developer_offline.rs
 +++ b/launcher/src/developer_offline.rs
 @@ -7,7 +7,7 @@ use std::process::Command;
@@ -716,6 +716,34 @@ index e9bd43f..2104183 100644
 +        cx.notify();
 +    }
  }
+diff --git a/launcher/src/glass_instance.rs b/launcher/src/glass_instance.rs
+index d515766..cdc70e7 100644
+--- a/launcher/src/glass_instance.rs
++++ b/launcher/src/glass_instance.rs
+@@ -776,6 +776,10 @@ impl Launcher {
+ }
+ 
+ /// The release a native build started from, read once per build: a new build has a new tag.
++/// A build may name *itself* as the release it started from -- the offline package ships the
++/// whole build and has no separate base to point at. That is no ancestor to describe, so the
++/// filter drops it: `version_label` otherwise asks for the label of this same tag again and
++/// recurses until the stack runs out.
+ fn native_base(tag: &str) -> Option<String> {
+     thread_local! {
+         static BASES: std::cell::RefCell<std::collections::HashMap<String, Option<String>>> =
+@@ -785,7 +789,11 @@ fn native_base(tag: &str) -> Option<String> {
+         bases
+             .borrow_mut()
+             .entry(tag.to_string())
+-            .or_insert_with(|| native_mods::about(tag).map(|about| about.base))
++            .or_insert_with(|| {
++                native_mods::about(tag)
++                    .map(|about| about.base)
++                    .filter(|base| base != tag)
++            })
+             .clone()
+     })
+ }
 diff --git a/launcher/src/glass_sheet.rs b/launcher/src/glass_sheet.rs
 index 458d43e..088140a 100644
 --- a/launcher/src/glass_sheet.rs
@@ -751,6 +779,28 @@ index 458d43e..088140a 100644
              None => self.version_of(instance).map_or_else(
                  || tr("No version installed").to_string(),
                  |tag| self.version_label(tag),
+diff --git a/launcher/src/glass_versions.rs b/launcher/src/glass_versions.rs
+index 2db7cb6..55559d0 100644
+--- a/launcher/src/glass_versions.rs
++++ b/launcher/src/glass_versions.rs
+@@ -678,10 +678,13 @@ impl Launcher {
+             for tag in tags {
+                 let mut line = Vec::new();
+                 if let Some(about) = native_mods::about(&tag) {
+-                    line.push(trf(
+-                        "Built on {base}",
+-                        &[("base", &self.version_label(&about.base))],
+-                    ));
++                    // A build that names itself as its base has no release to point at.
++                    if about.base != tag {
++                        line.push(trf(
++                            "Built on {base}",
++                            &[("base", &self.version_label(&about.base))],
++                        ));
++                    }
+                     // The build's own name stays in the details, for reports.
+                     line.push(tag.clone());
+                 }
 diff --git a/launcher/src/horizon_bundle.rs b/launcher/src/horizon_bundle.rs
 new file mode 100644
 index 0000000..0e60bdf
@@ -877,10 +927,10 @@ index af3c5da..bc57022 100644
          self.settings_query_focused = self.settings_query_focus.is_focused(window);
          let size = window.viewport_size();
 diff --git a/launcher/src/launcher_setup.rs b/launcher/src/launcher_setup.rs
-index 1b5a39e..6c7ce74 100644
+index 4f946bb..580096f 100644
 --- a/launcher/src/launcher_setup.rs
 +++ b/launcher/src/launcher_setup.rs
-@@ -187,6 +187,9 @@ impl Launcher {
+@@ -184,6 +184,9 @@ impl Launcher {
              args_input: line_edit::LineEdit::new(settings.game_args.clone(), 1024, 38),
              args_focused: false,
              args_focus: cx.focus_handle(),
@@ -890,7 +940,7 @@ index 1b5a39e..6c7ce74 100644
              proxy_input: line_edit::LineEdit::new(
                  settings.proxy.clone().unwrap_or_default(),
                  256,
-@@ -519,7 +522,8 @@ impl Launcher {
+@@ -517,7 +520,8 @@ impl Launcher {
      }
  
      pub(crate) fn launcher_download_available(&self) -> bool {
@@ -901,7 +951,7 @@ index 1b5a39e..6c7ce74 100644
  
      pub(crate) fn update_launcher(&mut self, release: Release) {
 diff --git a/launcher/src/main.rs b/launcher/src/main.rs
-index cccf9e9..9756728 100644
+index 8a8494a..947e74f 100644
 --- a/launcher/src/main.rs
 +++ b/launcher/src/main.rs
 @@ -29,6 +29,7 @@ mod export_page;
@@ -912,7 +962,7 @@ index cccf9e9..9756728 100644
  mod glass_account;
  mod glass_home;
  mod glass_home_lists;
-@@ -494,6 +495,10 @@ struct Launcher {
+@@ -519,6 +520,10 @@ struct Launcher {
      args_input: line_edit::LineEdit,
      args_focused: bool,
      args_focus: FocusHandle,
@@ -923,7 +973,7 @@ index cccf9e9..9756728 100644
      /// Settings' Proxy field, the same way (`proxy`).
      proxy_input: line_edit::LineEdit,
      proxy_focused: bool,
-@@ -667,6 +672,8 @@ fn menus() -> Vec<Menu> {
+@@ -692,6 +697,8 @@ fn menus() -> Vec<Menu> {
  mod startup;
  
  fn main() {
@@ -932,6 +982,26 @@ index cccf9e9..9756728 100644
      startup::run();
  }
  
+diff --git a/launcher/src/native_mods.rs b/launcher/src/native_mods.rs
+index 32bd57d..68c4409 100644
+--- a/launcher/src/native_mods.rs
++++ b/launcher/src/native_mods.rs
+@@ -886,10 +886,14 @@ fn about_in(dir: &Path) -> Option<About> {
+ 
+ /// The newest installed release or Nightly in `installed` (newest first).
+ /// Installed native clients retain their base's prepared data even when not selected.
++/// A build that names itself as its base depends on nothing but itself, so it is skipped:
++/// otherwise it would veto its own removal.
+ pub(crate) fn resource_dependent(tag: &str) -> Option<String> {
+     backend::installed()
+         .into_iter()
+-        .find(|version| about(version).is_some_and(|about| about.base == tag))
++        .find(|version| {
++            version.as_str() != tag && about(version).is_some_and(|about| about.base == tag)
++        })
+ }
+ 
+ pub(crate) fn resource_dependents(tag: &str) -> bool {
 diff --git a/launcher/src/switch_page.rs b/launcher/src/switch_page.rs
 index 4062a2e..e869e89 100644
 --- a/launcher/src/switch_page.rs
