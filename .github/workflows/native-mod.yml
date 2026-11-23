@@ -1,7 +1,8 @@
 name: Build minimap native mod
 
-# 把 native mod 的编译搬到 Actions：产物是**完整可用的 native 版本增量**，
-# 下下来解开跑 install-native-build.sh 就能玩，目标机不用装 rust / SDK / 编译缓存。
+# 把 native mod 的编译搬到 Actions：产物是**解压就能玩的离线包**
+# （自编离线启动器 + 整个 native 版本目录），目标机不用装 rust / SDK / 编译缓存，
+# 也不用跑安装脚本、不需要底座 nightly。
 #
 # 编的方式不是复刻 rustc：用官方 launcher 的 `native-build` 子命令（上游 mod 仓库
 # 自己的 validate.yml 也是这么编的），所以与启动器在本机编出来的是同一条代码路径。
@@ -23,10 +24,9 @@ on:
       install_tag:
         description: '装哪个 release tag；比带日期的 tag 更新的构建只在滚动 tag nightly 里'
         default: ''
-  push:
-    paths:
-      - tools/ci/build-native-mod.sh
-      - .github/workflows/native-mod.yml
+  # 不挂 push 触发：这个 workflow 会替换 Release 附件，而 inputs 的默认值指向旧的
+  # nightly（v0.7.9 + 0a875da），改脚本时自动跑一次就会把当前可用的包换掉。
+  # 要重编就手动 dispatch，把 pin_commit / pin_nightly 填对。
 
 # Release 的写权限走 contents（没有 releases 这个 scope）。
 permissions:
@@ -66,6 +66,9 @@ jobs:
           sudo apt-get install -y -qq --no-install-recommends libasound2-dev libudev-dev pkg-config
 
       - name: Build
+        env:
+          # 第 10 步要下载滚动 Release 里那份自编离线启动器（不在这里编，省 30 分钟）
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: bash tools/ci/build-native-mod.sh dist-native
 
       - name: Show the record
@@ -96,13 +99,32 @@ jobs:
         run: |
           set -euo pipefail
           TAG=native-mod
+          NOTES='解压就能玩：horizon-launcher + 整个 native 版本目录（含小地图 mod），
+          没有安装脚本、不需要底座 nightly、不需要编译。首启会自动复制进启动器数据目录并选中。'
           if ! gh release view "$TAG" >/dev/null 2>&1; then
-            gh release create "$TAG" --title 'Minimap native mod (full build)' --prerelease \
-              --notes '完整的 native 版本增量：编出来的两个 .so + 该 commit 的 SDK 引擎库 + mod 源码副本。
-          解开 → bash install-native-build.sh → 把实例切到新版本，不需要下载 SDK，也不需要编译。'
+            gh release create "$TAG" --title 'Horizon offline + minimap (unpack and play)' \
+              --prerelease --notes "$NOTES"
+          else
+            gh release edit "$TAG" --title 'Horizon offline + minimap (unpack and play)' --notes "$NOTES"
           fi
-          # 包名每次带日期短码都变，先清掉上一轮的附件，让这个 Release 恒一个包。
-          gh release view "$TAG" --json assets -q '.assets[].name' | while read -r name; do
-            [ -n "$name" ] && gh release delete-asset "$TAG" "$name" -y >/dev/null 2>&1 || true
-          done
-          gh release upload "$TAG" dist-native/*.tar.gz dist-native/*.sha256 --clobber
+          # 包名每次带日期短码都变。先传新的、再删旧的：上传失败时旧包还在，
+          # 不会出现「Release 里一个附件都没有」的空窗。
+          OFFLINE=$(find dist-native -maxdepth 1 -name 'horizon-linux-x86_64-native-offline-*.tar.gz' | head -1)
+          FILES=()
+          if [ -n "$OFFLINE" ]; then
+            FILES=("$OFFLINE" "$OFFLINE.sha256")
+          else
+            for f in dist-native/*.tar.gz dist-native/*.sha256; do FILES+=("$f"); done
+          fi
+          gh release upload "$TAG" "${FILES[@]}" --clobber
+          while read -r name; do
+            [ -n "$name" ] || continue
+            keep=0
+            for f in "${FILES[@]}"; do [ "$(basename "$f")" = "$name" ] && keep=1; done
+            [ "$keep" = 1 ] || gh release delete-asset "$TAG" "$name" -y >/dev/null 2>&1 || true
+          done < <(gh release view "$TAG" --json assets -q '.assets[].name')
+          if [ -n "$OFFLINE" ]; then
+            echo "已发布离线包：$(basename "$OFFLINE")"
+          else
+            echo "只有增量包（这次没取到自编离线启动器）" >&2
+          fi

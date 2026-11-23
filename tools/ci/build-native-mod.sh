@@ -408,3 +408,44 @@ tar -czf "$TARBALL" -C "$PKG" .
 printf '\n完成：%s（%.1f MB）\n' "$TARBALL" "$(stat -c %s "$TARBALL" | awk '{print $1/1e6}')"
 printf '用法：mkdir /tmp/nf && tar -xf %s -C /tmp/nf && bash /tmp/nf/install-native-build.sh\n' \
   "$(basename "$TARBALL")"
+
+# 附：native 离线包（解压即用）
+#
+# 增量包要底座 + 脚本，玩家用不了。这里再组一个「解压 → 打开」的包：自编离线启动器
+# + 整个 native 版本目录（$BUILT，含 loader、SDK 库、mod .so，不带可重建的 .local）。
+# 启动器不在这里编（要 30+ 分钟），取滚动 Release 里那份：它带 offline 账号补丁，
+# 只在启动器自身升级时才变。
+if [ "${SKIP_OFFLINE_PKG:-0}" != 1 ]; then
+  step "附：native 离线包（解压即用，不用脚本、不用底座）"
+  REPO=${GITHUB_REPOSITORY:-sintrs/H-RUST}
+  OFFLINE_TAG=${OFFLINE_TAG:-nightly-offline}
+  SRC=$WORK/offline-src
+  LBIN=$WORK/offline-lbin
+  LAUNCHER_PKG=""
+  mkdir -p "$SRC" "$LBIN"
+  if command -v gh >/dev/null 2>&1 && gh release view "$OFFLINE_TAG" --repo "$REPO" >/dev/null 2>&1; then
+    gh release download "$OFFLINE_TAG" --repo "$REPO" \
+      --pattern 'horizon-linux-x86_64-offline-*.tar.gz' --dir "$SRC" --clobber >/dev/null 2>&1 || true
+    LAUNCHER_PKG=$(ls "$SRC"/*.tar.gz 2>/dev/null | head -1 || true)
+  fi
+  if [ -n "${LAUNCHER_PKG:-}" ] && [ -s "$LAUNCHER_PKG" ]; then
+    # 只抽那一个二进制；图标等资源仍从整包里取（make-offline-package.sh 会排除二进制与 data/）
+    tar -xzf "$LAUNCHER_PKG" -C "$LBIN" ./horizon-launcher 2>/dev/null || \
+      tar -xzf "$LAUNCHER_PKG" -C "$LBIN" horizon-launcher
+    [ -x "$LBIN/horizon-launcher" ] || die "离线包里没有 horizon-launcher"
+    cp -f "$LAUNCHER_PKG" "$WORK/launcher-assets.tar.gz"
+    NATIVE_DIR=$BUILT bash "$ROOT/tools/ci/make-offline-package.sh" \
+      "$WORK/launcher-assets.tar.gz" - "$COMMIT" "$OUT" \
+      "$LBIN/horizon-launcher" "$(basename "$BUILT")"
+    OFFLINE_TARBALL=$(ls -t "$OUT"/horizon-linux-x86_64-native-offline-*.tar.gz 2>/dev/null | head -1 || true)
+    if [ -n "${OFFLINE_TARBALL:-}" ]; then
+      ( cd "$OUT" && sha256sum "$(basename "$OFFLINE_TARBALL")" > "$(basename "$OFFLINE_TARBALL").sha256" )
+      printf '\n离线包：%s（%.1f MB）\n解压后直接 ./horizon-launcher\n' \
+        "$OFFLINE_TARBALL" "$(stat -c %s "$OFFLINE_TARBALL" | awk '{print $1/1e6}')"
+    else
+      echo "!! 离线包没有生成（make-offline-package.sh 未产出附件），增量包不受影响" >&2
+    fi
+  else
+    echo "!! 取不到 $OFFLINE_TAG 的离线包，跳过 native 离线包；增量包已正常产出" >&2
+  fi
+fi

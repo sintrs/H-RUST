@@ -10,7 +10,16 @@
 # 设置 → 账号页里改，也可以 `horizon-launcher account offline NAME`。
 #
 # 用法:
-#   bash make-offline-package.sh <launcher.tar.gz> <game.tar.gz> <commit> <输出目录> <自编 launcher> <版本 tag>
+#   bash make-offline-package.sh <launcher.tar.gz|-> <game.tar.gz|-> <commit> <输出目录> <自编 launcher> <版本 tag>
+#
+# <launcher.tar.gz> 只用来取随包的图标 / desktop 文件（里面的 horizon-launcher 一定会被
+# 自编的那个覆盖，data/ 一律不收），所以传官方启动器包或已有的离线包都行；传 `-` 就纯不带图标。
+#
+# 两种取游戏的方式：
+#   默认            解开 <game.tar.gz>（上游 nightly 原样包）当版本目录
+#   NATIVE_DIR=…    直接用一个已装好的版本目录（native 版：loader + SDK 库 + mod .so）。
+#                   此时 <game.tar.gz> 传 `-`，tag 传该目录的目录名。`.local`（资源缓存，
+#                   首启会重建）与 `.last-used` 不打包。
 set -euo pipefail
 
 LAUNCHER_TGZ=${1:?用法: make-offline-package.sh <launcher.tar.gz> <game.tar.gz> <commit> <输出目录> <launcher 二进制> <版本 tag>}
@@ -19,9 +28,16 @@ COMMIT=${3:?}
 OUT=${4:-package}
 LAUNCHER_BIN=${5:?}
 TAG=${6:?}
+NATIVE_DIR=${NATIVE_DIR:-}
 
-[[ -f "$LAUNCHER_TGZ" ]] || { echo "错误：找不到启动器包 $LAUNCHER_TGZ" >&2; exit 1; }
-[[ -f "$GAME_TGZ" ]] || { echo "错误：找不到游戏包 $GAME_TGZ" >&2; exit 1; }
+if [[ "$LAUNCHER_TGZ" != "-" ]]; then
+  [[ -f "$LAUNCHER_TGZ" ]] || { echo "错误：找不到启动器包 $LAUNCHER_TGZ" >&2; exit 1; }
+fi
+if [[ -n "$NATIVE_DIR" ]]; then
+  [[ -d "$NATIVE_DIR" ]] || { echo "错误：NATIVE_DIR 不是目录 $NATIVE_DIR" >&2; exit 1; }
+else
+  [[ -f "$GAME_TGZ" ]] || { echo "错误：找不到游戏包 $GAME_TGZ" >&2; exit 1; }
+fi
 [[ "$COMMIT" =~ ^[0-9a-f]{40}$ ]] || { echo "错误：commit 必须是 40 位十六进制" >&2; exit 1; }
 [[ -x "$LAUNCHER_BIN" ]] || { echo "错误：找不到自编的启动器 $LAUNCHER_BIN" >&2; exit 1; }
 [[ "$TAG" =~ ^[A-Za-z0-9._-]+$ ]] || { echo "错误：版本 tag 含非法字符：$TAG" >&2; exit 1; }
@@ -52,26 +68,39 @@ ROOT="$WORK/root"
 VERSIONS="$ROOT/data/versions/$TAG"
 mkdir -p "$VERSIONS"
 
-echo "==> 解开官方启动器包（只取随包的图标与 LICENSE）"
-mkdir -p "$WORK/launcher-pkg"
-tar -xzf "$LAUNCHER_TGZ" -C "$WORK/launcher-pkg" --touch --no-same-owner
-# 官方包里除二进制外还有 desktop 文件、图标等：一并留用，二进制换成自编的。
-if [[ -f "$WORK/launcher-pkg/horizon-launcher" ]]; then
-  (cd "$WORK/launcher-pkg" && tar -cf - .) | (cd "$ROOT" && tar -xmf -)
+if [[ "$LAUNCHER_TGZ" != "-" ]]; then
+  echo "==> 解开官方启动器包（只取随包的图标与 LICENSE）"
+  mkdir -p "$WORK/launcher-pkg"
+  tar -xzf "$LAUNCHER_TGZ" -C "$WORK/launcher-pkg" --touch --no-same-owner
+  # 只搬非二进制资源：horizon-launcher 一定换成自编的，data/ 绝不能从这儿混进来
+  (cd "$WORK/launcher-pkg" && tar -cf - --exclude=./horizon-launcher --exclude=./data .) \
+    | (cd "$ROOT" && tar -xmf -)
 fi
 install -Dm755 "$LAUNCHER_BIN" "$ROOT/horizon-launcher"
 echo "==> 已放入自编的离线启动器"
 
 echo "==> 解开官方游戏包"
-mkdir -p "$WORK/game"
-tar -xzf "$GAME_TGZ" -C "$WORK/game" --touch --no-same-owner 2>/dev/null || true
-GAME_DIR=$(find "$WORK/game" -maxdepth 2 -type f -name 'horizon-client' | head -1)
-[[ -n "$GAME_DIR" ]] || { echo "错误：游戏包里没有 horizon-client" >&2; exit 1; }
-GAME_DIR=$(dirname "$GAME_DIR")
+if [[ -n "$NATIVE_DIR" ]]; then
+  echo "==> 改用现成的 native 版本目录：$NATIVE_DIR"
+  [[ -f "$NATIVE_DIR/.installed" ]] || { echo "错误：native 目录没有 .installed（启动器不会认）" >&2; exit 1; }
+  [[ -f "$NATIVE_DIR/native-mods.json" ]] || echo "    警告：没有 native-mods.json，启动器可能会就地重编 mod"
+  GAME_DIR=$NATIVE_DIR
+else
+  mkdir -p "$WORK/game"
+  tar -xzf "$GAME_TGZ" -C "$WORK/game" --touch --no-same-owner 2>/dev/null || true
+  GAME_DIR=$(find "$WORK/game" -maxdepth 2 -type f -name 'horizon-client' | head -1)
+  [[ -n "$GAME_DIR" ]] || { echo "错误：游戏包里没有 horizon-client" >&2; exit 1; }
+  GAME_DIR=$(dirname "$GAME_DIR")
+fi
 
 echo "==> 把游戏装成 $TAG"
-# tar 管道复制，解包带 -m（不还原 mtime）：有些文件系统不允许改时间戳
-(cd "$GAME_DIR" && tar -cf - .) | (cd "$VERSIONS" && tar -xmf -)
+# tar 管道复制，解包带 -m（不还原 mtime）：有些文件系统不允许改时间戳。
+# native 版不带走 .local（811 MB 资源缓存，首次启动重建）与 .last-used。
+if [[ -n "$NATIVE_DIR" ]]; then
+  (cd "$GAME_DIR" && tar -cf - --exclude=./.local --exclude=./.last-used .) | (cd "$VERSIONS" && tar -xmf -)
+else
+  (cd "$GAME_DIR" && tar -cf - .) | (cd "$VERSIONS" && tar -xmf -)
+fi
 
 # 普通版本目录：启动器靠 .installed 认出"已安装"，靠目录名当 tag。
 : > "$VERSIONS/.installed"
@@ -83,6 +112,34 @@ for extra in horizon-ctl horizon-prepare horizon-server; do
   [[ -f "$VERSIONS/$extra" ]] && chmod +x "$VERSIONS/$extra"
 done
 
+if [[ -n "$NATIVE_DIR" ]]; then
+cat > "$ROOT/PLAY-OFFLINE.txt" <<EOF
+Horizon offline package (native mods included)
+=============================================
+
+Game build: nightly $SHORT, with the minimap native mod already compiled for it
+Launcher:   built from the same upstream source with the offline account patch
+            (offline names, no account needed, multiplayer and LAN work, no self-update)
+
+Nothing is compiled on your side: the mod ships as a .so built against this exact
+build ($SHORT), so the launcher takes it as-is instead of rebuilding it.
+
+How to play
+-----------
+1. Open ./horizon-launcher (double-click it).
+   The first start copies the bundled build into the launcher data folder and
+   selects it -- after that just click the launcher's icon. The first start also
+   rebuilds the ~800 MB asset cache, so give it a minute.
+2. Your offline name: Settings -> Account -> "Play offline", type a name (3 to 16
+   letters, digits or _) and press Enter. From a terminal, the same:
+       ./horizon-launcher account offline YourName
+3. The minimap is part of the build; its key bindings are in Settings -> Mods.
+
+No Microsoft account is needed and no account session is read.
+Single-player, multiplayer and LAN all work. Servers that require a real
+Minecraft account (online-mode=true) will still reject offline identities.
+EOF
+else
 cat > "$ROOT/PLAY-OFFLINE.txt" <<EOF
 Horizon offline package
 =======================
@@ -109,8 +166,13 @@ No Microsoft account is needed and no account session is read.
 Single-player, multiplayer and LAN all work. Servers that require a real
 Minecraft account (online-mode=true) will still reject offline identities.
 EOF
+fi
 
-ASSET="$OUT/$NAME-offline-$STAMP.tar.gz"
+if [[ -n "$NATIVE_DIR" ]]; then
+  ASSET="$OUT/$NAME-native-offline-$STAMP.tar.gz"
+else
+  ASSET="$OUT/$NAME-offline-$STAMP.tar.gz"
+fi
 # `-C root .` so the archive has no wrapper directory: `tar -xzf` here yields
 # ./horizon-launcher and ./data directly. Sorting keeps runs comparable.
 tar -czf "$ASSET" -C "$ROOT" --sort=name .
