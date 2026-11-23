@@ -60,6 +60,10 @@ echo "  复制 $(du -sh "$ROOT/versions/$BASE" | cut -f1) → $DEST"
 # 不用裸 cp -a：-a 会尝试保留属主/时间戳，在容器或 root 沙箱里那两步必然失败，
 # cp 返回非零，配合 set -e 会让脚本在复制到一半时静默中止（payload 根本没铺上）。
 cp -a --no-preserve=ownership,timestamps "$ROOT/versions/$BASE" "$DEST"
+# base nightly 自己就带 .installed，复制过来会让这个目录在 payload 落地之前
+# 就已经"看起来构建完成"。先撤掉，等 payload 铺完再重建 —— 否则中途失败时
+# 启动器会把这个缺库的目录当成可用版本。
+rm -f "$DEST/.installed"
 cp -a --no-preserve=ownership,timestamps "$HERE/payload/." "$DEST/"
 : > "$DEST/.installed"
 
