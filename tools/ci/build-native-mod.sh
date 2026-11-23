@@ -22,6 +22,8 @@
 #                    只在滚动 tag `nightly` 里，会随时被顶掉
 #   EXPECTED_SHA256  给了就报告与本机那版的字节差异（仅供参考，不作为失败条件：
 #                   .so 里嵌了构建哈希目录名，换机器必然不同）
+#   PORT_PATCH       LOD 移植补丁，默认 tools/ci/native-mod-lod-surface.patch
+#                    只有 target 版本的 lod.rs 已经是 span 压缩的 TileColumns 时才打
 #
 # 不需要 Minecraft、不需要 Java、不需要账号：native-build 要的“已准备”只是一个清单文件，
 # 见第 5 步。编译只读 SDK 的 rmeta 与 mod 源码，818 MB 的游戏资源只供运行游戏用。
@@ -33,6 +35,8 @@
 #   BUILD.txt                                   这一包对应的 pin 与校验和
 # 以及同名 .tar.gz。放进已有的 native-<commit>-<hash>/ 即可替换，无需重编。
 set -euo pipefail
+
+ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
 
 MOD_REPO=${MOD_REPO:-Gurov08ruS/Minimap-Worldmap-and-waypoints-reworked}
 MOD_REF=${MOD_REF:-v0.7.9}
@@ -149,6 +153,30 @@ case "$INSTALLED" in
   *) die "装到的 $INSTALLED 与 pin 的 $SHORT 不符" ;;
 esac
 
+step "4b/9 LOD 移植（只对 tile 已改成 span 压缩的 target 生效）"
+# 上游把 LOD 的 tile 从 Arc<Vec<Column>> 换成了 span 压缩的 pub(crate) TileColumns：
+# 字段还在（ready 能列出），但 len/spans/surface 全是 crate 私有的，mod 碰不到，
+# 于是 lod_adapter 里 columns.len() / columns.iter() / Arc<Vec<Column>> 三处全废。
+# 移植走 SDK 自己留的口子 `Lod::surface(x, z)`（文档写的就是"a client mod's map past
+# the loaded chunks"），按块列取样，不再借 tile 内部的列。
+# 判据用上游那一版的 lod.rs：有 TileColumns 才需要，没有就一个字不动，所以对着旧
+# nightly 编出来和以前完全一样。
+PORT_PATCH=${PORT_PATCH:-$ROOT/tools/ci/native-mod-lod-surface.patch}
+curl -fsSL --retry 3 -o "$WORK/lod-$SHORT.rs" \
+  "https://raw.githubusercontent.com/horizon-rust/horizon/${COMMIT}/crates/horizon-client-render/src/lod.rs" || \
+  die "取不到 $SHORT 的 lod.rs，无法判断要不要移植"
+if grep -q 'struct TileColumns' "$WORK/lod-$SHORT.rs"; then
+  if [ ! -f "$MODDIR/.lod-surface-port" ]; then
+    ( cd "$MODDIR" && patch -p1 --batch --forward -i "$PORT_PATCH" ) || die "LOD 移植补丁打不上"
+    : > "$MODDIR/.lod-surface-port"
+  fi
+  LOD_PORTED=1
+  echo "  已移植：lod_adapter 改走 Lod::surface，去重键换成 sample 指针"
+else
+  LOD_PORTED=0
+  echo "  $SHORT 的 tile 还是 Arc<Vec<Column>>，不需要移植"
+fi
+
 step "5/9 满足 prepared 前置条件（只要一个清单文件）"
 # native-build 进 pipeline 第一件事是 backend::ready() -> check_prepared() -> prepared_at()，
 # 而 prepared_at() 只做两件事：资源目录里有能解析的 horizon-resources.json，且顶层没有
@@ -246,6 +274,11 @@ if problems:
     print('\n'.join('!! ' + p for p in problems), file=sys.stderr)
     sys.exit(1)
 PY
+
+if [ "${LOD_PORTED:-0}" = 1 ]; then
+  printf 'lod-port   lod_adapter 改走 Lod::surface（%s 的 tile 是 span 压缩的 TileColumns）\n' \
+    "$SHORT" >> "$OUT/BUILD.txt"
+fi
 
 # 上面 python 的 EXPECTED_SHA256 / STRICT 来自环境变量，随参数传入
 TARBALL=$OUT/horizon-native-mod-${MOD_VERSION}-${SHORT}.tar.gz

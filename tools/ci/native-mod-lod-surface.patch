@@ -1,0 +1,172 @@
+diff --git a/mixins/minimap_worldmap_waypoints_reworked/client.rs b/mixins/minimap_worldmap_waypoints_reworked/client.rs
+index 8c2cb88..d7e00de 100644
+--- a/mixins/minimap_worldmap_waypoints_reworked/client.rs
++++ b/mixins/minimap_worldmap_waypoints_reworked/client.rs
+@@ -446,8 +446,7 @@ struct State {
+     biome_chunks: BTreeSet<(i32, i32)>,
+     leaves: Option<(u64, Arc<LeafPalette>)>,
+     lod_elapsed: f64,
+-    lod_sources:
+-        BTreeMap<(Dimension, maps::LodKey), (Weak<Vec<horizon_client::lod::Column>>, Instant)>,
++    lod_sources: BTreeMap<(Dimension, maps::LodKey), (usize, Instant)>,
+     info: Option<Menu>,
+     info_scroll: runtime::ListScroll,
+ }
+@@ -455,8 +454,8 @@ fn known_lod_sources(state: &State, dimension: Dimension) -> BTreeMap<(i32, i32,
+     state
+         .lod_sources
+         .iter()
+-        .filter(|((d, _), (source, _))| *d == dimension && source.strong_count() != 0)
+-        .map(|((_, key), (source, _))| ((key.x, key.z, key.level), source.as_ptr() as usize))
++        .filter(|((d, _), _)| *d == dimension)
++        .map(|((_, key), (source, _))| ((key.x, key.z, key.level), *source))
+         .collect()
+ }
+ impl Default for State {
+@@ -3461,9 +3460,10 @@ pub(super) fn frame(game: &mut Game<'_>, elapsed: Duration) {
+         state.lod_elapsed = 0.0;
+         if let Some(lod) = game.lod.as_ref() {
+             let _timing = runtime::profiling::measure("lod-snapshot-pick");
++            let live = super::minimap_lod_adapter::live(lod);
+             state
+                 .lod_sources
+-                .retain(|_, (source, _)| source.strong_count() != 0);
++                .retain(|_, (source, _)| live.contains(source));
+             let known = known_lod_sources(&state, dimension);
+             let span = controller
+                 .maps
+@@ -3475,9 +3475,9 @@ pub(super) fn frame(game: &mut Game<'_>, elapsed: Duration) {
+             } else {
+                 [player.x, player.z]
+             };
+-            for (key, columns) in super::minimap_lod_adapter::snapshots(lod, &known, focus, span, 8)
++            for (key, source, columns) in
++                super::minimap_lod_adapter::snapshots(lod, &known, focus, span, 8)
+             {
+-                let source = Arc::downgrade(&columns);
+                 let biome_palette = game
+                     .world_biomes
+                     .as_ref()
+@@ -3505,7 +3505,7 @@ pub(super) fn frame(game: &mut Game<'_>, elapsed: Duration) {
+                                     return None;
+                                 }
+                                 let cell = ((dz / stride) * 16 + (dx / stride)) as usize;
+-                                columns.get(cell)?.surface.map(|surface| surface.biome)
++                                (*columns.get(cell)?).map(|surface| surface.biome)
+                             };
+                             let color = |id: horizon_world::registry::BlockStateId,
+                                          at: [i32; 2]| {
+@@ -3565,8 +3565,8 @@ pub(super) fn frame(game: &mut Game<'_>, elapsed: Duration) {
+                                 biomes: vec![None; 256],
+                                 ..maps::Tile::default()
+                             };
+-                            for (i, column) in columns.iter().enumerate() {
+-                                let Some(surface) = column.surface else {
++                            for (i, surface) in columns.iter().enumerate() {
++                                let Some(surface) = *surface else {
+                                     continue;
+                                 };
+                                 let at = [
+diff --git a/mixins/minimap_worldmap_waypoints_reworked/lod_adapter.rs b/mixins/minimap_worldmap_waypoints_reworked/lod_adapter.rs
+index 6c9164b..7368d4c 100644
+--- a/mixins/minimap_worldmap_waypoints_reworked/lod_adapter.rs
++++ b/mixins/minimap_worldmap_waypoints_reworked/lod_adapter.rs
+@@ -1,6 +1,14 @@
+ // SPDX-License-Identifier: GPL-3.0-only
+-// Injected into Horizon's CPU LOD module. Read existing immutable samples only.
+-use std::{collections::BTreeMap, sync::Arc};
++// Injected into Horizon's game module. Reads the far terrain through
++// `Lod::surface`: tiles are span-compressed and opaque to a mod now, so a
++// tile's cells are sampled by block column instead of borrowed.
++use std::{
++    collections::{BTreeMap, BTreeSet},
++    sync::Arc,
++};
++
++/// One tile's 256 cells, in tile order, as `Lod::surface` reports them.
++pub type Cells = Vec<Option<horizon_client::lod::Surface>>;
+ 
+ pub fn priority(
+     x: i32,
+@@ -21,16 +29,25 @@ pub fn priority(
+     )
+ }
+ 
++/// The sample pointers the LOD still holds. A sample is immutable and a
++/// resample replaces it with a new `Arc` under the same key, so a pointer that
++/// is gone is stale: that tile may be submitted again.
++pub fn live(lod: &horizon_client::lod::Lod) -> BTreeSet<usize> {
++    lod.ready
++        .values()
++        .map(|columns| Arc::as_ptr(columns) as usize)
++        .collect()
++}
++
++/// Up to `limit` ready tiles missing from `known`, nearest first, each with the
++/// pointer of the sample it was taken from and that tile's cells.
+ pub fn snapshots(
+     lod: &horizon_client::lod::Lod,
+     known: &BTreeMap<(i32, i32, u8), usize>,
+     focus: [f64; 2],
+     span: [f64; 2],
+     limit: usize,
+-) -> Vec<(
+-    horizon_client::lod::TileKey,
+-    Arc<Vec<horizon_client::lod::Column>>,
+-)> {
++) -> Vec<(horizon_client::lod::TileKey, usize, Arc<Cells>)> {
+     let limit = limit.min(8);
+     if limit == 0 {
+         return Vec::new();
+@@ -41,19 +58,44 @@ pub fn snapshots(
+         .filter(|(key, columns)| {
+             known.get(&(key.x, key.z, key.level)).copied() != Some(Arc::as_ptr(columns) as usize)
+         })
+-        .filter(|(_, columns)| {
+-            columns.len() == 256 && columns.iter().any(|column| column.surface.is_some())
++        .map(|(key, columns)| {
++            (
++                priority(key.x, key.z, key.level, focus, span),
++                *key,
++                Arc::as_ptr(columns) as usize,
++            )
+         })
+-        .map(|(key, columns)| (priority(key.x, key.z, key.level, focus, span), key, columns))
+         .collect();
+     if available.len() > limit {
+         available.select_nth_unstable_by_key(limit, |v| v.0);
+         available.truncate(limit);
+     }
+     available.sort_unstable_by_key(|v| v.0);
+-    available
+-        .into_iter()
+-        .take(limit)
+-        .map(|(_, key, columns)| (*key, Arc::clone(columns)))
++    let mut picked = Vec::new();
++    for (_, key, source) in available.into_iter().take(limit) {
++        let cells = sample(lod, key);
++        // A tile still being sampled holds nothing yet: leave it out, so the
++        // caller keeps asking and picks it up once its cells arrive.
++        if cells.iter().any(|cell| cell.is_some()) {
++            picked.push((key, source, Arc::new(cells)));
++        }
++    }
++    picked
++}
++
++/// A tile's cells by block column. `Lod::surface` answers with the finest
++/// sample at that column, so a coarse tile carries whatever detail has arrived
++/// under it rather than its own reduced columns: the map draws no less than the
++/// samples hold.
++fn sample(lod: &horizon_client::lod::Lod, key: horizon_client::lod::TileKey) -> Cells {
++    let [origin_x, _, origin_z] = key.origin();
++    let stride = key.size() / 16;
++    (0..256_i32)
++        .map(|i| {
++            lod.surface(
++                origin_x + (i % 16) * stride + stride / 2,
++                origin_z + (i / 16) * stride + stride / 2,
++            )
++        })
+         .collect()
+ }
