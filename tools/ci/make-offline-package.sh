@@ -133,7 +133,7 @@ cat > "$ROOT/PLAY-OFFLINE.txt" <<EOF
 Horizon offline package (native mods included)
 =============================================
 
-Game build: nightly $SHORT, with the minimap native mod already compiled for it
+Game build: nightly $SHORT, with the ${NATIVE_MOD_LABEL:-minimap} native mod already compiled for it
 Launcher:   built from the same upstream source with the offline account patch
             (offline names, no account needed, multiplayer and LAN work, no self-update)
 
@@ -152,7 +152,7 @@ How to play
 2. Your offline name: Settings -> Account -> "Play offline", type a name (3 to 16
    letters, digits or _) and press Enter. From a terminal, the same:
        ./horizon-launcher account offline YourName
-3. The minimap is part of the build; its key bindings are in Settings -> Mods.
+3. The ${NATIVE_MOD_LABEL:-minimap} is part of the build; its key bindings are in Settings -> Mods.
 
 No Microsoft account is needed and no account session is read.
 Single-player, multiplayer and LAN all work. Servers that require a real

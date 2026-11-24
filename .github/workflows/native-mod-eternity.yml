@@ -1,0 +1,136 @@
+name: Build Eternity world map native mod
+
+# native-mod.yml 的同款流水线，换成编 Eternity world map：
+#   qwinterxxx/horizon-eternity-world-map
+# 产物同样是**解压就能玩的离线包**（自编离线启动器 + 整个 native 版本目录）。
+#
+# 和 minimap 那条的三处差别（都由 build-native-mod.sh 的开关控制，不改脚本行为）：
+#   1. 这个仓库**没有 compatibility.json**，pin 直接写在 horizon-mod.toml 的 [native] 里
+#      → COMPAT_FILE=none，pin 只能靠输入参数给
+#   2. **没有 tools/package.py**，本身就是单 crate（Cargo.toml + src/lib.rs），仓库根可直接编
+#      → PROJECT_SOURCE=repo
+#   3. LOD 移植补丁是 minimap 专用的（改 lod_adapter），这里用不上
+#      → LOD_PATCH=off
+#
+# 另一处已知差异：它有 `[[native.module]] bridge`，把 147 KB 的 src/bridge.rs 塞进
+# horizon-client 的 game 模块，直调内部结构。0a875da → f1bb66f 之间 game.rs 动了约 109 行，
+# 这一步是唯一可能编不过的地方；报错会集中在 bridge.rs 的字段/方法名上。
+on:
+  workflow_dispatch:
+    inputs:
+      mod_ref:
+        description: 'mod 源 tag（只支持 tag，脚本走 codeload refs/tags）；默认 v0.1.2'
+        default: v0.1.2
+      pin_commit:
+        description: '把 mod 的 pin 改到这个上游 commit 再编（留空 = 用 mod 自己 pin 的 0a875da）'
+        default: f1bb66f353cf67f2aa4665293fc75c8d91186fc7
+      pin_nightly:
+        description: '该 commit 的安装版本名；没有 compatibility.json 时必填'
+        default: nightly-2026-11-22-f1bb66f
+      install_tag:
+        description: '装哪个 release tag；f1bb66f 只存在于滚动 tag nightly（带日期的 nightly-2026-11-22 是 2b77287）'
+        default: nightly
+  # 同样不挂 push 触发：会替换 Release 附件。
+
+permissions:
+  contents: write
+
+concurrency:
+  group: h-rust-native-mod-eternity
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: native-build the full version folder
+    runs-on: ubuntu-22.04   # glibc 2.35，与上游官方包同档；不要用 -latest
+    timeout-minutes: 90
+    env:
+      MOD_REPO: qwinterxxx/horizon-eternity-world-map
+      MOD_REF: ${{ inputs.mod_ref || 'v0.1.2' }}
+      PIN_COMMIT: ${{ inputs.pin_commit }}
+      PIN_NIGHTLY: ${{ inputs.pin_nightly }}
+      INSTALL_TAG: ${{ inputs.install_tag }}
+      # 只在 install_tag 留空时当兜底装哪个 tag；写 nightly 才与 pin 的 f1bb66f 对齐
+      # （带日期的 nightly-2026-11-22 是 2b77287，装上会对不上 pin 的 SHORT 而报错）
+      NIGHTLY_TAG: nightly
+      LAUNCHER_TAG: launcher@0.2.107
+      COMPAT_FILE: none       # 仓库没有 compatibility.json
+      PROJECT_SOURCE: repo    # 没有 tools/package.py，仓库根就是可编的 crate
+      LOD_PATCH: off          # 补丁是 minimap 专用的
+      NATIVE_MOD_LABEL: Eternity world map   # 离线包 PLAY-OFFLINE.txt 里怎么称呼这个 mod
+      WORK: ${{ github.workspace }}/build/native-mod-eternity
+    steps:
+      - uses: actions/checkout@v4
+
+      # 3.12 才有 tomllib：脚本读 horizon-mod.toml 要它。22.04 自带 3.10。
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      # native-build 会用启动器自带的 rust 编 wgpu/winits，它们要 ALSA 与 udev 的头文件。
+      - name: System libraries the build links against
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq --no-install-recommends libasound2-dev libudev-dev pkg-config
+
+      - name: Build
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: bash tools/ci/build-native-mod.sh dist-native-eternity
+
+      - name: Show the record
+        if: always()
+        run: |
+          set -uo pipefail
+          cat dist-native-eternity/pkg/BUILD.txt 2>/dev/null || true
+          echo '--- native-build 日志尾部 ---'
+          tail -30 build/native-mod-eternity/native-build.log 2>/dev/null || true
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: native-full-eternity
+          path: |
+            dist-native-eternity/*.tar.gz
+            dist-native-eternity/*.sha256
+            dist-native-eternity/pkg/BUILD.txt
+            dist-native-eternity/pkg/manifest.json
+            build/native-mod-eternity/native-build.log
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: Publish to the rolling release
+        if: success()
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          TAG=native-mod-eternity
+          NOTES='解压就能玩：horizon-launcher + 整个 native 版本目录（含 Eternity world map），
+          没有安装脚本、不需要底座 nightly、不需要编译。首启会自动复制进启动器数据目录并选中。'
+          if ! gh release view "$TAG" >/dev/null 2>&1; then
+            gh release create "$TAG" --title 'Horizon offline + Eternity world map (unpack and play)' \
+              --prerelease --notes "$NOTES"
+          else
+            gh release edit "$TAG" --title 'Horizon offline + Eternity world map (unpack and play)' --notes "$NOTES"
+          fi
+          # 包名每次带日期短码都变。先传新的、再删旧的，避免出现空窗。
+          OFFLINE=$(find dist-native-eternity -maxdepth 1 -name 'horizon-linux-x86_64-native-offline-*.tar.gz' | head -1)
+          FILES=()
+          if [ -n "$OFFLINE" ]; then
+            FILES=("$OFFLINE" "$OFFLINE.sha256")
+          else
+            for f in dist-native-eternity/*.tar.gz dist-native-eternity/*.sha256; do FILES+=("$f"); done
+          fi
+          gh release upload "$TAG" "${FILES[@]}" --clobber
+          while read -r name; do
+            [ -n "$name" ] || continue
+            keep=0
+            for f in "${FILES[@]}"; do [ "$(basename "$f")" = "$name" ] && keep=1; done
+            [ "$keep" = 1 ] || gh release delete-asset "$TAG" "$name" -y >/dev/null 2>&1 || true
+          done < <(gh release view "$TAG" --json assets -q '.assets[].name')
+          if [ -n "$OFFLINE" ]; then
+            echo "已发布离线包：$(basename "$OFFLINE")"
+          else
+            echo "只有增量包（这次没取到自编离线启动器）" >&2
+          fi

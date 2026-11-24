@@ -50,6 +50,10 @@ NIGHTLY_TAG=${NIGHTLY_TAG:-nightly-2026-11-20}
 LAUNCHER_TAG=${LAUNCHER_TAG:-launcher@0.2.107}
 WORK=${WORK:-build/native-mod}
 EXPECTED_SHA256=${EXPECTED_SHA256:-}
+# 下面三个开关默认取「minimap 那套」的行为，不填就是原来的流程。
+COMPAT_FILE=${COMPAT_FILE:-auto}          # auto | none  —— none：mod 仓库没有 compatibility.json，pin 只从 horizon-mod.toml 读
+PROJECT_SOURCE=${PROJECT_SOURCE:-package} # package | repo —— package：跑 mod 的 tools/package.py 生成扁平工程；repo：仓库根本身就是可编的 crate
+LOD_PATCH=${LOD_PATCH:-auto}              # auto | off   —— off：这个 mod 用不上 LOD 移植补丁
 
 OUT=${1:-dist-native}
 mkdir -p "$WORK" "$OUT"
@@ -88,18 +92,27 @@ fi
 step "3/9 读 pin（commit / mixins / 版本名）"
 read -r COMMIT MIXINS NIGHTLY_VERSION MOD_VERSION <<EOF
 $(python3 - "$MODDIR" <<'PY'
-import json, sys, tomllib
-root = sys.argv[1]
-compat = json.load(open(f'{root}/compatibility.json'))
-manifest = tomllib.load(open(f'{root}/horizon-mod.toml', 'rb'))
+import json, os, pathlib, sys, tomllib
+root = pathlib.Path(sys.argv[1])
+manifest = tomllib.load(open(root / 'horizon-mod.toml', 'rb'))
 native = manifest['native']
-if (native['horizon'], native['mixins']) != (compat['horizon_revision'], compat['horizon_mixins_revision']):
-    raise SystemExit('horizon-mod.toml 与 compatibility.json 的 pin 不一致')
-print(compat['horizon_revision'], compat['horizon_mixins_revision'],
-      compat['nightly_version'], manifest['version'])
+compat_path = root / 'compatibility.json'
+if compat_path.is_file() and os.environ.get('COMPAT_FILE', 'auto') != 'none':
+    compat = json.loads(compat_path.read_text())
+    if (native['horizon'], native['mixins']) != (compat['horizon_revision'], compat['horizon_mixins_revision']):
+        raise SystemExit('horizon-mod.toml 与 compatibility.json 的 pin 不一致')
+    nightly = compat['nightly_version']
+else:
+    # 没有 compatibility.json：安装版本名只能由 PIN_NIGHTLY 给，这里占位避免空字段被 IFS 折叠
+    nightly = os.environ.get('PIN_NIGHTLY', '') or '-'
+print(native['horizon'], native['mixins'], nightly, manifest['version'])
 PY
 )
 EOF
+if [ "$NIGHTLY_VERSION" = "-" ]; then
+  NIGHTLY_VERSION=${PIN_NIGHTLY:-}
+  [ -n "$NIGHTLY_VERSION" ] || die "mod 没有 compatibility.json，必须给 PIN_NIGHTLY（该 commit 的安装版本名）"
+fi
 ORIG_COMMIT=$COMMIT
 SHORT=${COMMIT:0:7}
 # tomllib 要 python 3.11+；Ubuntu 22.04 自带的 3.10 没有它，workflow 里用 setup-python 指定 3.12。
@@ -130,11 +143,13 @@ for key, value in (('horizon', commit), ('mixins', mixins)):
     if not count:
         raise SystemExit(f'[native] 段里没有 {key}')
 toml.write_text(block[0] + '\n[native]\n' + body)
-compat = json.loads((root / 'compatibility.json').read_text())
-compat['horizon_revision'] = commit
-compat['horizon_mixins_revision'] = mixins
-compat['nightly_version'] = nightly
-(root / 'compatibility.json').write_text(json.dumps(compat, indent=2) + '\n')
+compat_path = root / 'compatibility.json'
+if compat_path.is_file():
+    compat = json.loads(compat_path.read_text())
+    compat['horizon_revision'] = commit
+    compat['horizon_mixins_revision'] = mixins
+    compat['nightly_version'] = nightly
+    compat_path.write_text(json.dumps(compat, indent=2) + '\n')
 print(f'  pin 已改为 {commit[:7]} / {mixins[:7]} / {nightly}')
 PY
   COMMIT=$PIN_COMMIT
@@ -167,20 +182,25 @@ step "4b/9 LOD 移植（只对 tile 已改成 span 压缩的 target 生效）"
 # the loaded chunks"），按块列取样，不再借 tile 内部的列。
 # 判据用上游那一版的 lod.rs：有 TileColumns 才需要，没有就一个字不动，所以对着旧
 # nightly 编出来和以前完全一样。
-PORT_PATCH=${PORT_PATCH:-$ROOT/tools/ci/native-mod-lod-surface.patch}
-curl -fsSL --retry 3 -o "$WORK/lod-$SHORT.rs" \
-  "https://raw.githubusercontent.com/horizon-rust/horizon/${COMMIT}/crates/horizon-client-render/src/lod.rs" || \
-  die "取不到 $SHORT 的 lod.rs，无法判断要不要移植"
-if grep -q 'struct TileColumns' "$WORK/lod-$SHORT.rs"; then
-  if [ ! -f "$MODDIR/.lod-surface-port" ]; then
-    ( cd "$MODDIR" && patch -p1 --batch --forward -i "$PORT_PATCH" ) || die "LOD 移植补丁打不上"
-    : > "$MODDIR/.lod-surface-port"
-  fi
-  LOD_PORTED=1
-  echo "  已移植：lod_adapter 改走 Lod::surface，去重键换成 sample 指针"
-else
+if [ "$LOD_PATCH" = off ]; then
   LOD_PORTED=0
-  echo "  $SHORT 的 tile 还是 Arc<Vec<Column>>，不需要移植"
+  echo "  跳过 LOD 移植（LOD_PATCH=off；补丁只对 minimap 的 lod_adapter 有效）"
+else
+  PORT_PATCH=${PORT_PATCH:-$ROOT/tools/ci/native-mod-lod-surface.patch}
+  curl -fsSL --retry 3 -o "$WORK/lod-$SHORT.rs" \
+    "https://raw.githubusercontent.com/horizon-rust/horizon/${COMMIT}/crates/horizon-client-render/src/lod.rs" || \
+    die "取不到 $SHORT 的 lod.rs，无法判断要不要移植"
+  if grep -q 'struct TileColumns' "$WORK/lod-$SHORT.rs"; then
+    if [ ! -f "$MODDIR/.lod-surface-port" ]; then
+      ( cd "$MODDIR" && patch -p1 --batch --forward -i "$PORT_PATCH" ) || die "LOD 移植补丁打不上"
+      : > "$MODDIR/.lod-surface-port"
+    fi
+    LOD_PORTED=1
+    echo "  已移植：lod_adapter 改走 Lod::surface，去重键换成 sample 指针"
+  else
+    LOD_PORTED=0
+    echo "  $SHORT 的 tile 还是 Arc<Vec<Column>>，不需要移植"
+  fi
 fi
 
 step "5/9 满足 prepared 前置条件（只要一个清单文件）"
@@ -207,9 +227,17 @@ fi
 echo "  实例 $INSTANCE"
 
 step "7/9 生成扁平工程（mod 仓库自己的 package.py，不是我们猜的布局）"
-( cd "$MODDIR" && python3 tools/package.py --project target/ci-project > "$WORK/package.json" )
-PROJECT=$MODDIR/target/ci-project
-[ -f "$PROJECT/src/lib.rs" ] || die "扁平工程没生成：$PROJECT"
+if [ "$PROJECT_SOURCE" = repo ]; then
+  # 没有 tools/package.py 的 mod：仓库根本身就是单 crate（Cargo.toml + src/lib.rs），直接编
+  [ -f "$MODDIR/Cargo.toml" ] && [ -f "$MODDIR/src/lib.rs" ] || \
+    die "PROJECT_SOURCE=repo，但 $MODDIR 不是可直接编的 crate（缺 Cargo.toml 或 src/lib.rs）"
+  PROJECT=$MODDIR
+  echo "  用仓库根当工程：$PROJECT"
+else
+  ( cd "$MODDIR" && python3 tools/package.py --project target/ci-project > "$WORK/package.json" )
+  PROJECT=$MODDIR/target/ci-project
+  [ -f "$PROJECT/src/lib.rs" ] || die "扁平工程没生成：$PROJECT"
+fi
 
 step "8/9 编译（启动器自己的 Rust 与 SDK，profile=optimized）"
 "$L" native-build "$PROJECT" \
