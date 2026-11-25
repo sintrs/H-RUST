@@ -4,13 +4,20 @@
 #
 #   Horizon（现有）                           Sunrise（这条）
 #   horizon-rust/horizon          → 全 404    sunrise-org/sunrise + sunrise-launcher
-#   需要打 offline-port.patch                **不打补丁**，官方就带离线入口
+#   需要打 offline-port.patch                **不打补丁**
 #   编译启动器（Rust 工具链 + 图形库）        纯下载 + 组装，不编译
 #   state/*.json 记录版本                    无状态，每次都问上游要最新的
 #
-# 之所以不需要补丁：Sunrise 本体自带 `--developer-single-player`（单人、不登录，
-# 公开在 Launch API 契约里）和 `--name`（多人身份），启动器也已经是官方产物。
-# 拼起来就是一个能玩的包 —— 但启动器**认不认**这个版面，正是这条链要回答的问题。
+# 为什么不需要补丁：`--developer-single-player` 是个**硬拦截**（它把账号层拆掉，
+# 并且 `--server`、局域网开放、LAN 监听、连远程服、`OnlineMode::lan()` 全拒），
+# 但**不传它就什么都不拦** —— 本体走 `Ok(None)` 分支，按 vanilla 离线玩家跑。
+# Horizon 的 `offline-port.patch`（21 个文件全在 launcher/）做的就是「别传它」。
+# 这条链更进一步：**PLAY-OFFLINE.sh 根本不经过启动器**，没东西去传那个 flag。
+#
+# 包里有三个入口，各管一段：
+#   PLAY-OFFLINE.sh   玩：直连本体，--resources 由脚本自己找
+#   run-offline.sh    起启动器：准备游戏文件、改设置
+#   offline-wrapper.sh 走启动器时的保险：滤掉 --developer-single-player
 #
 # 触发：只有 workflow_dispatch。**刻意不挂 schedule** —— Horizon 那两条挂了 cron
 # 之后，上游 404 就变成每半小时一次的失败通知；这条在验证出结论之前不该自动跑。
@@ -133,14 +140,21 @@ jobs:
             echo "game:       official sunrise-linux-x86_64.tar.gz, copied verbatim"
             echo "published:  $(date -u +%Y-%m-%dT%H:%M:%SZ)"
             echo
-            echo "Unzip, then either:"
-            echo "  ./sunrise-launcher                        (the launcher, if it lists this build)"
-            echo "  ./data/versions/<tag>/sunrise-client --developer-single-player"
-            echo "                                            (single player, no sign-in)"
-            echo "  ./data/versions/<tag>/sunrise-client --name YourName"
-            echo "                                            (multiplayer identity)"
-            echo "First run also needs the game files prepared from your own Minecraft 26.3:"
-            echo "  ./data/versions/<tag>/sunrise-prepare --prepare --server-jar PATH"
+            echo "Unzip, then once, to prepare the game files from your own Minecraft:"
+            echo "  ./run-offline.sh prepare ${{ steps.probe.outputs.version_tag }}"
+            echo "  (or ./run-offline.sh and press Play -- the first start does the same thing)"
+            echo
+            echo "After that, to play offline, with LAN and offline servers:"
+            echo "  ./PLAY-OFFLINE.sh"
+            echo "  ./PLAY-OFFLINE.sh --name YourName        play as YourName"
+            echo "  ./PLAY-OFFLINE.sh --server HOST:PORT     join an offline-mode server"
+            echo
+            echo "Do not pass --developer-single-player: it locks the game to single-player"
+            echo "and refuses the LAN and every remote server. PLAY-OFFLINE.sh never passes it."
+            echo
+            echo "Going through the launcher instead: point its launch command at"
+            echo "  ./offline-wrapper.sh"
+            echo "which strips the account-only flags the launcher adds."
           } > package/BUILD-INFO.txt
 
       - name: Smoke-test the package
