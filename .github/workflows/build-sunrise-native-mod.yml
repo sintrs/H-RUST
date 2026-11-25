@@ -62,39 +62,63 @@ jobs:
           ls -1 "$HOME/.local/share/sunrise/launcher/versions"
 
       - name: Fetch Minecraft 26.3 from Mojang
-        # prepare needs a Minecraft install; Mojang publishes it without an account,
-        # so a runner can have one as long as we fetch it ourselves.
+        # prepare wants a full install: version file, client jar, every library,
+        # and the asset index with its objects. Mojang serves all of it without an
+        # account, so the runner can have one.
         run: |
           set -euo pipefail
           python3 - <<'PY'
+          import concurrent.futures as cf
           import json, pathlib, urllib.request
 
           def get(url):
-              with urllib.request.urlopen(url, timeout=180) as r:
-                  return r.read()
+              for _ in range(3):
+                  try:
+                      with urllib.request.urlopen(url, timeout=180) as r:
+                          return r.read()
+                  except Exception:
+                      pass
+              raise SystemExit("failed: " + url)
 
-          def save(url, path):
+          root = pathlib.Path.home() / ".minecraft"
+
+          def save(item):
+              url, rel = item
+              path = root / rel
+              if path.exists():
+                  return 0
               path.parent.mkdir(parents=True, exist_ok=True)
-              if not path.exists():
-                  path.write_bytes(get(url))
+              path.write_bytes(get(url))
+              return 1
 
           man = json.loads(get("https://piston-meta.mojang.com/mc/game/version_manifest_v2.json"))
           entry = next(v for v in man["versions"] if v["id"] == "26.3")
           data = json.loads(get(entry["url"]))
-          root = pathlib.Path.home() / ".minecraft"
           vdir = root / "versions" / "26.3"
           vdir.mkdir(parents=True, exist_ok=True)
           (vdir / "26.3.json").write_text(json.dumps(data))
-          save(data["downloads"]["client"]["url"], vdir / "26.3.jar")
-          count = 0
+          save((data["downloads"]["client"]["url"], "versions/26.3/26.3.jar"))
+
+          pairs = []
           for lib in data.get("libraries", []):
               downloads = lib.get("downloads") or {}
               arts = [downloads.get("artifact")] + list((downloads.get("classifiers") or {}).values())
               for art in arts:
                   if art and art.get("path"):
-                      save(art["url"], root / "libraries" / art["path"])
-                      count += 1
-          print("libraries saved:", count)
+                      pairs.append((art["url"], "libraries/" + art["path"]))
+
+          ai = data["assetIndex"]
+          (root / "assets" / "indexes").mkdir(parents=True, exist_ok=True)
+          (root / "assets" / "indexes" / (ai["id"] + ".json")).write_bytes(get(ai["url"]))
+          index = json.loads((root / "assets" / "indexes" / (ai["id"] + ".json")).read_text())
+          for name, obj in index["objects"].items():
+              h = obj["hash"]
+              pairs.append(("https://resources.download.minecraft.net/" + h[:2] + "/" + h,
+                            "assets/objects/" + h[:2] + "/" + h))
+
+          with cf.ThreadPoolExecutor(max_workers=24) as ex:
+              saved = sum(ex.map(save, pairs))
+          print("files:", len(pairs), "downloaded:", saved)
           PY
           du -sh "$HOME/.minecraft"
 
