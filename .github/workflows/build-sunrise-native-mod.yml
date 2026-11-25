@@ -26,6 +26,18 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 90
     steps:
+      - name: Runtime libraries the launcher links
+        # A bare runner has no xkbcommon, and the launcher is an eframe binary
+        # even when it only runs a CLI subcommand.
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq \
+            libxkbcommon-x11-0 libxkbcommon0 libxcb-icccm4 libxcb-image0 \
+            libxcb-keysyms1 libxcb-randr0 libxcb-render0 libxcb-render-util0 \
+            libxcb-shape0 libxcb-xkb1 libxcb-xinerama0 libgl1 libglx0 libegl1 \
+            libfontconfig1 libfreetype6 libdbus-1-3 libasound2t64
+
       - name: Unpack the launcher
         run: |
           set -euo pipefail
@@ -36,6 +48,7 @@ jobs:
           found=$(find /tmp/lx -name 'sunrise-launcher' -type f | head -1)
           chmod +x "$found"
           echo "LAUNCHER=$found" >> "$GITHUB_ENV"
+          ldd "$found" | grep 'not found' || true
           "$found" --version
 
       - name: Install the build
