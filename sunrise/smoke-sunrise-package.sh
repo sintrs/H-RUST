@@ -135,32 +135,31 @@ fi
 
 # --- 启动器认不认这个版本 ----------------------------------------------------
 # --- 启动器认不认这个版本 ----------------------------------------------------
-# 这一段是这条试验链唯一还没有答案的问题。Sunrise 启动器有自己的版本库（`versions`
-# 子命令），而它的离线玩法走的是另一条路：`developer-install CHECKOUT --program CHECKOUT`
-# —— 要一个 git checkout，不是「往版本目录里放个二进制」就完事。
+# 这一段是这条试验链唯一还没有答案的问题。
 #
-# 所以「把官方包放进 data/versions/<tag>/」这个版面对启动器是否**真的**可用，本脚本
-# 只能观察到「启动器有没有把它列出来」。列出来了 = 这条路成立；没列出来 = 启动器不认
-# 这个版面，下一步得换成别的组装方式（或者退回「让玩家自己 prepare」的流程）。
-# 两种情况这里都不判失败，因为包本身没坏 —— 坏的是假设，该由人看了结论再定。
-say "3. does the launcher list the bundled build?"
+# `versions` 不带参数时列的是**上游可下载的 release**（`tag  date  state`，state 为
+# `installed` / 空 / `no build for this platform`），所以拿它 grep tag 会假阳性 ——
+# 上游有这个 release 就算命中，跟我们有没有让启动器认出来毫无关系。
+# `--installed` 才是「本机装了哪些」，那条路不联网、只读数据目录。
+#
+# 这一条决定包能不能交给玩家：列出来了 = 启动器接管这个版本，玩家点 Play 就走它；
+# 没列出来 = 包还得靠「直接跑 data/versions/<tag>/sunrise-client」才能玩。
+say "3. does the launcher take the bundled build as an installed version?"
 if [[ "$LAUNCHER_USABLE" == "1" ]]; then
-  # 列已装版本用 `versions`（Sunrise 的 CLI 里 `list` 不存在；`versions` 同时能列表
-  # 上游 release 和本机已装的构建）。
-  LIST_OUT=$(timeout 180 "$L" versions 2>&1) || LIST_RC=$?
+  LIST_OUT=$(timeout 180 "$L" versions --installed 2>&1) || LIST_RC=$?
   echo "$LIST_OUT" >> "$LOG"
   if [[ "${LIST_RC:-0}" -eq 0 ]]; then
     if grep -qF -- "$TAG" <<< "$LIST_OUT"; then
-      say "ok   versions shows $TAG -- the packaged layout is usable by this launcher"
+      say "ok   versions --installed lists $TAG -- the launcher owns this build"
     else
-      say "unanswered: the launcher runs but does not list $TAG"
-      echo "--       the packaged layout is not one this launcher reads; the game still runs"
-      echo "--       straight from data/versions/<tag>/, but the launcher will not offer it."
-      echo "--       See sunrise/README.md for what to try next."
+      say "unanswered: the launcher runs but does not see $TAG as installed"
+      echo "--       the layout under data/versions/ is not one the launcher adopts, so a"
+      echo "--       player has to run the client from that folder by hand. See"
+      echo "--       sunrise/README.md for what to try next."
       echo "$LIST_OUT" | sed 's/^/     | /' | head -15
     fi
   else
-    note "versions exited ${LIST_RC}: $(head -3 <<< "$LIST_OUT" | tr '\n' ' ')"
+    note "versions --installed exited ${LIST_RC}: $(head -3 <<< "$LIST_OUT" | tr '\n' ' ')"
   fi
 else
   say "skipped: the launcher cannot run in this environment"
