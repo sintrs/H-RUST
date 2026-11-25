@@ -102,7 +102,9 @@ resources: if sibling.join("sunrise-resources.json").exists() {
 
 准备那一步只有启动器有，`sunrise-ctl` 的错误文案原文就是
 `prepare it in the launcher first (sunrise-launcher prepare <tag>)`，所以包里写
-`./run-offline.sh prepare <tag>` 是通的。代码侧一旦发现资源不在就停在门口，
+`./run-offline.sh prepare`（版本已选中，不用带参数；要指定就 `--version <tag>`，
+**裸写 tag 会被 clap 拒成 `unexpected argument`** —— 这条踩过，别再写错）。
+代码侧一旦发现资源不在就停在门口，
 这个分支已实测（退出码 1 + 提示文案），资源存在时的三条路径也都实测过。
 
 ## 那 `offline-account.patch` 呢
@@ -287,7 +289,7 @@ Release 页的 `sunrise-offline` 附件，解开：
 
 ```sh
 tar -xzf sunrise-linux-x86_64-offline-*.tar.gz
-./run-offline.sh prepare <tag>        # 只需一次：从你自己的 Minecraft 准备文件
+./run-offline.sh prepare              # 只需一次：从你自己的 Minecraft 准备文件
 ./PLAY-OFFLINE.sh                      # 单人 + LAN + 离线服务器都从这儿进
 ./PLAY-OFFLINE.sh --name YourName      # 用你的名字
 ./PLAY-OFFLINE.sh --server HOST        # 进离线服务器

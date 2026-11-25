@@ -199,7 +199,10 @@ Sunrise builds them from your own Minecraft: Java Edition, and that step lives i
 the launcher. Run ./run-offline.sh once, pick the build, press Play, and wait for
 the first start to finish -- or in a terminal:
 
-    ./run-offline.sh prepare ${TAG}
+    ./run-offline.sh prepare
+
+(the build is already selected, so no arguments are needed; add
+--version ${TAG} if you want to name it -- a bare tag is rejected)
 
 Then run ./PLAY-OFFLINE.sh again. Nothing is downloaded from our side: the files
 come from the copy of Minecraft you own.
@@ -271,7 +274,11 @@ So once:
        ./run-offline.sh              then press Play and let it finish
 
    or, in a terminal:
-       ./run-offline.sh prepare ${TAG}
+       ./run-offline.sh prepare
+
+   The build is already selected, so that is all it needs. To name it, use the
+   --version option: ./run-offline.sh prepare --version ${TAG}
+   (a bare tag is rejected -- "unexpected argument").
 
 After that ./PLAY-OFFLINE.sh goes straight in. It finds the prepared files by
 itself and passes them along; if they are not there yet it says so instead of

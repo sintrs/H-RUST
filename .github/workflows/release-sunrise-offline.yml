@@ -141,7 +141,9 @@ jobs:
             echo "published:  $(date -u +%Y-%m-%dT%H:%M:%SZ)"
             echo
             echo "Unzip, then once, to prepare the game files from your own Minecraft:"
-            echo "  ./run-offline.sh prepare ${{ steps.probe.outputs.version_tag }}"
+            echo "  ./run-offline.sh prepare"
+            echo "  (the build is already selected; to name it, ./run-offline.sh prepare --version ${{ steps.probe.outputs.version_tag }})"
+            echo "  (a bare tag is rejected: 'unexpected argument')"
             echo "  (or ./run-offline.sh and press Play -- the first start does the same thing)"
             echo
             echo "After that, to play offline, with LAN and offline servers:"
