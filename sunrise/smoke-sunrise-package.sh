@@ -53,20 +53,24 @@ PKG="$BASE/extract"
 # 启动器包自带的 LICENSE / LICENSES/ 必须留着（Sunrise 本体是 PolyForm Shield，
 # 分发时得带上），所以它们在白名单里，不是意外闯入的东西。
 EXTRA=$(ls -A "$PKG" | grep -vx -e sunrise-launcher -e data -e PLAY-OFFLINE.txt -e BUILD-INFO.txt \
-                                      -e LICENSE -e LICENSES || true)
+                                      -e LICENSE -e LICENSES -e run-offline.sh -e PLAY.sh || true)
 if [[ -n "$EXTRA" ]]; then
   bad "the package unpacks with unexpected top-level entries: $(echo "$EXTRA" | tr '\n' ' ')"
 fi
 [[ -x "$PKG/sunrise-launcher" ]] || { bad "the package has no executable sunrise-launcher"; exit 1; }
+[[ -x "$PKG/run-offline.sh" ]] || { bad "the package has no run-offline.sh to point the launcher at data/"; exit 1; }
 [[ -d "$PKG/data/versions/$TAG" ]] || { bad "the package has no bundled build at data/versions/$TAG"; exit 1; }
 CLIENT="$PKG/data/versions/$TAG/sunrise-client"
 [[ -x "$CLIENT" ]] || { bad "the bundled build $TAG has no executable sunrise-client"; exit 1; }
-say "ok   top level is launcher + data/versions/$TAG"
+say "ok   top level is launcher + data/versions/$TAG + run-offline.sh"
 
 # --- 一次性的运行环境 -------------------------------------------------------
-# 启动器首启会往数据目录里装东西，绝不能碰 runner 的真状态。
-# Horizon 改名成 Sunrise 后，读的是哪个环境变量还不确定，所以 HOME/XDG 一律重定向，
-# 同时把两个候选名字都设上。
+# 每个测试都用一份**新解开的包**，因为 run-offline.sh 会把启动器指向包里那个 data/，
+# 启动器会往里面写真东西（settings、prepare 状态）。共用一份的话第二个测试看到的
+# 就不是「刚解压的样子」了。
+#
+# HOME/XDG 仍然重定向，避免碰到 runner 的真状态；但别再设 SUNRISE_LAUNCHER_HOME ——
+# 那正是 run-offline.sh 要自己决定的东西，预先设上就测不出它有没有生效。
 USER_HOME="$BASE/userhome"
 mkdir -p "$USER_HOME"
 export HOME="$USER_HOME"
@@ -75,20 +79,19 @@ export XDG_CONFIG_HOME="$USER_HOME/.config"
 export XDG_CACHE_HOME="$USER_HOME/.cache"
 export XDG_STATE_HOME="$USER_HOME/.local/state"
 export XDG_RUNTIME_DIR="$USER_HOME/run"
-export HORIZON_LAUNCHER_HOME="$BASE/home-horizon"
-export SUNRISE_LAUNCHER_HOME="$BASE/home-sunrise"
-export SUNRISE_HOME="$BASE/home-sunrise"
 export NO_AT_BRIDGE=1
-mkdir -p "$XDG_DATA_HOME" "$XDG_CONFIG_HOME" "$XDG_CACHE_HOME" "$XDG_STATE_HOME" \
-         "$XDG_RUNTIME_DIR" "$HORIZON_LAUNCHER_HOME" "$SUNRISE_LAUNCHER_HOME"
+mkdir -p "$XDG_DATA_HOME" "$XDG_CONFIG_HOME" "$XDG_CACHE_HOME" "$XDG_STATE_HOME" "$XDG_RUNTIME_DIR"
 chmod 700 "$XDG_RUNTIME_DIR" 2>/dev/null || true
+unset SUNRISE_LAUNCHER_HOME SUNRISE_HOME HORIZON_LAUNCHER_HOME
 
 say "1. the packaged launcher starts"
-L="$PKG/sunrise-launcher"
+# 走 run-offline.sh，因为那是玩家实际会跑的东西 —— 直接跑未包装的启动器会读到
+# 玩家家里的数据目录，测不到这个包。
+L="$PKG/run-offline.sh"
 OUT=$(timeout 60 "$L" --version 2>&1) && RC=0 || RC=$?
 echo "$OUT" >> "$LOG"
 if [[ "$RC" -eq 0 && "$OUT" == *sunrise-launcher* ]]; then
-  say "ok   --version -> $(head -1 <<< "$OUT")"
+  say "ok   run-offline.sh --version -> $(head -1 <<< "$OUT")"
 elif grep -qiE 'Permission denied|os error 13|No such file or directory' <<< "$OUT"; then
   # 根环境里启动器会去写一个宿主机上不可写的目录（容器、root 直跑）。
   # 这和包无关，把它记成 skip 而不是 fail。
@@ -135,15 +138,15 @@ fi
 
 # --- 启动器认不认这个版本 ----------------------------------------------------
 # --- 启动器认不认这个版本 ----------------------------------------------------
-# 这一段是这条试验链唯一还没有答案的问题。
+# `versions --installed` 读的是 `<data_dir>/versions/*/.installed`，不联网。data_dir()
+# 由 run-offline.sh 设的 SUNRISE_LAUNCHER_HOME 决定 —— 所以这一条同时验证了两件事：
+# 包里的 .installed 标记对不对，和脚本有没有真把启动器按到包里的 data/ 上。
 #
-# `versions` 不带参数时列的是**上游可下载的 release**（`tag  date  state`，state 为
-# `installed` / 空 / `no build for this platform`），所以拿它 grep tag 会假阳性 ——
-# 上游有这个 release 就算命中，跟我们有没有让启动器认出来毫无关系。
-# `--installed` 才是「本机装了哪些」，那条路不联网、只读数据目录。
+# 不加 --installed 的 `versions` 列的是**上游可下载的 release**，拿它 grep 一定命中
+# （上游确实有这个 tag），是假阳性，不能用。
 #
 # 这一条决定包能不能交给玩家：列出来了 = 启动器接管这个版本，玩家点 Play 就走它；
-# 没列出来 = 包还得靠「直接跑 data/versions/<tag>/sunrise-client」才能玩。
+# 没列出来 = 只能靠直接跑 data/versions/<tag>/sunrise-client。
 say "3. does the launcher take the bundled build as an installed version?"
 if [[ "$LAUNCHER_USABLE" == "1" ]]; then
   LIST_OUT=$(timeout 180 "$L" versions --installed 2>&1) || LIST_RC=$?
@@ -152,14 +155,20 @@ if [[ "$LAUNCHER_USABLE" == "1" ]]; then
     if grep -qF -- "$TAG" <<< "$LIST_OUT"; then
       say "ok   versions --installed lists $TAG -- the launcher owns this build"
     else
-      say "unanswered: the launcher runs but does not see $TAG as installed"
-      echo "--       the layout under data/versions/ is not one the launcher adopts, so a"
-      echo "--       player has to run the client from that folder by hand. See"
-      echo "--       sunrise/README.md for what to try next."
+      bad "the launcher runs but does not see $TAG as installed: run-offline.sh did not point it at data/, or the bundled .installed marker is not where backend::installed() looks"
       echo "$LIST_OUT" | sed 's/^/     | /' | head -15
     fi
   else
     note "versions --installed exited ${LIST_RC}: $(head -3 <<< "$LIST_OUT" | tr '\n' ' ')"
+  fi
+
+  # 版本被选中，玩家才有「点 Play 就走」这回事。
+  SETTINGS_OUT=$(timeout 60 "$L" settings 2>&1) || true
+  echo "$SETTINGS_OUT" >> "$LOG"
+  if grep -q "selected_version" <<< "$SETTINGS_OUT"; then
+    say "ok   settings reports a selected version ($(grep selected_version <<< "$SETTINGS_OUT" | head -1 | cut -c1-60))"
+  else
+    note "settings printed no selected_version line"
   fi
 else
   say "skipped: the launcher cannot run in this environment"

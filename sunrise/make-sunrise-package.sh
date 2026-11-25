@@ -42,9 +42,19 @@ fi
 mkdir -p "$OUT"
 OUT=$(cd "$OUT" && pwd)
 
-# 与 Horizon 包同构：不解套一层目录，解压即得 sunrise-launcher 与 data/。
+# 版面：包根目录就是启动器的**数据目录**，不是游戏目录。
+#
+# 这是和 Horizon 包最大的不同，也是实测出来的：Sunrise 启动器认已装版本的唯一依据是
+# `<data_dir>/versions/<tag>/.installed`（backend::installed() 读它），而 data_dir()
+# 默认是 `~/.local/share/sunrise/launcher`，**不看包旁边放什么**。所以把本体放
+# `data/versions/` 再指望启动器自己发现，是行不通的 —— CI 上跑出来就是
+# "No version is installed."。
+#
+# 因此 data/ 直接做成启动器数据目录，并用 run-offline.sh 把 SUNRISE_LAUNCHER_HOME
+# 指过来（两个变量都要设：只设一个时启动器会去读 location.json，可能被旧记录干扰）。
 ROOT="$WORK/root"
-VERSIONS="$ROOT/data/versions/$TAG"
+LAUNCHER_HOME="$ROOT/data"
+VERSIONS="$LAUNCHER_HOME/versions/$TAG"
 mkdir -p "$VERSIONS"
 
 echo "==> 解开官方启动器包"
@@ -72,14 +82,53 @@ echo "==> 把本体装成 $TAG"
 # tar 管道复制，解包带 -m（不还原 mtime）：有些文件系统不允许改时间戳。
 (cd "$GAME_DIR" && tar -cf - .) | (cd "$VERSIONS" && tar -xmf -)
 
-# Sunrise 用版本目录名当 build 名；Sunrise 启动器认出「已装」的标志还不确定是
-# .installed 还是别的，两种都放上，冒烟测试会告诉我们哪个真正起作用。
+# 这个标记就是启动器认「已装」的全部依据：backend::installed() 只收
+# `versions/*/.installed` 存在的目录，内容不看。空文件即可。
 : > "$VERSIONS/.installed"
 
 for exe in sunrise-client sunrise-ctl sunrise-prepare sunrise-server sunrise-perf sunrise-port-pack; do
   [[ -f "$VERSIONS/$exe" ]] && chmod +x "$VERSIONS/$exe"
 done
 [[ -f "$VERSIONS/sunrise-client" ]] || { echo "错误：版本目录里没有 sunrise-client" >&2; exit 1; }
+
+# 启动脚本：Sunrise 启动器只认自己的数据目录，而那个目录由 SUNRISE_LAUNCHER_HOME
+# 决定，不是「启动器旁边」。没有这个脚本，包解开后启动器看到的是玩家家里那个空目录，
+# 随包版本相当于不存在。
+#
+# 两个变量都设：data_location::configured_roots() 只在 **两个都设** 时返回 None，
+# 这时 data_dir() 直接用 SUNRISE_LAUNCHER_HOME；只设一个它会去读
+# ~/.config/sunrise/launcher/location.json，玩家之前装过别的版本就会串。
+cat > "$ROOT/run-offline.sh" <<'LAUNCH'
+#!/bin/sh
+# Start the Sunrise launcher with this folder as its data folder.
+#
+# The launcher keeps its installed builds under <data_dir>/versions/, and data_dir()
+# only follows SUNRISE_LAUNCHER_HOME (default ~/.local/share/sunrise/launcher).
+# Pointing both that and SUNRISE_HOME here is what makes the bundled build visible
+# instead of whatever the player's home already had.
+set -eu
+
+# Resolve our own folder, following symlinks, so the script works when linked elsewhere.
+self=$0
+while [ -L "$self" ]; do
+  link=$(readlink "$self")
+  case $link in
+    /*) self=$link ;;
+    *) self=$(dirname "$self")/$link ;;
+  esac
+done
+here=$(cd "$(dirname "$self")" && pwd)
+
+SUNRISE_LAUNCHER_HOME="$here/data"
+SUNRISE_HOME="$here/data"
+export SUNRISE_LAUNCHER_HOME SUNRISE_HOME
+
+exec "$here/sunrise-launcher" "$@"
+LAUNCH
+chmod +x "$ROOT/run-offline.sh"
+
+# 一个不带参数的入口，双击时最容易选中。指向 run-offline.sh，逻辑只有一份。
+ln -sf run-offline.sh "$ROOT/PLAY.sh"
 
 cat > "$ROOT/PLAY-OFFLINE.txt" <<EOF
 Sunrise offline package (Linux x86_64)
@@ -90,19 +139,31 @@ Launcher:   official Sunrise launcher, unmodified
 Commit:     ${COMMIT}
 
 Nothing here is compiled or patched: this is the official launcher and the official
-game build, packaged together so the build is already installed on first start.
+game build, with the build already installed so the launcher offers it on first start.
 
 How to play
 -----------
-1. Open ./sunrise-launcher (double-click it).
-2. Single player: the build is already installed, press Play. Sunrise prepares the
-   resources from your own Minecraft: Java Edition 26.3 the first time.
-3. Offline name, from a terminal:
-       ./data/versions/${TAG}/sunrise-client --name YourName
-   (or run the client directly from that folder.)
+1. Run ./run-offline.sh (or ./PLAY.sh, or double-click either one).
+
+   Use that, not ./sunrise-launcher directly: the launcher only looks for installed
+   builds in its own data folder, and the script is what points it at ./data.
+   Running the bare launcher would show whatever your home folder already had.
+
+   From a menu or a terminal in another folder:
+       /full/path/to/run-offline.sh
+
+2. Single player: the build is listed and selected, press Play. Sunrise prepares the
+   game files from your own Minecraft: Java Edition 26.3 the first time.
+
+3. Offline, without any account -- straight from the build folder:
+       ./data/versions/${TAG}/sunrise-client --developer-single-player
+       ./data/versions/${TAG}/sunrise-client --name YourName     (multiplayer identity)
 
 Sunrise needs your own copy of Minecraft: Java Edition. No account is used by the
 steps above; servers with online-mode=true still reject offline identities.
+
+If the window does not open, the build itself can always be started directly:
+       ./data/versions/${TAG}/sunrise-client --developer-single-player
 EOF
 
 ASSET="$OUT/$NAME-offline-$STAMP.tar.gz"
