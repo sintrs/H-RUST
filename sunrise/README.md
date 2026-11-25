@@ -4,13 +4,13 @@
 和仓库里另外两条（`release-offline.yml` / `release-game.yml`，跟
 `horizon-rust/horizon`）互不影响：不共用脚本、不共用 state、不共用 release。
 
-**状态：可用。** CI 上已经跑通到「启动器接管随包版本并选中它」，
-产物发在 Release `sunrise-offline`。
+**状态：单人可用，多人/LAN 需要补丁（`offline-account.patch`，已能编译，未实机验证）。**
+CI 上已经跑通到「启动器接管随包版本并选中它」，产物发在 Release `sunrise-offline`。
 
 ## 为什么要试这一条
 
 `horizon-rust` 整个组织已经 404（2026-11-25 记录），现有两条链的 schedule 已停。
-Sunrise 是同一套代码改名搬过去的，而且**本体自带离线入口**：
+Sunrise 是同一套代码改名搬过去的，而且**本体自带一个离线入口**：
 
 ```
 --developer-single-player    单人，不需要登录（在 Launch API 契约里，是隐藏选项）
@@ -18,14 +18,75 @@ Sunrise 是同一套代码改名搬过去的，而且**本体自带离线入口*
 --session-file PATH          启动器给的会话（本链不用）
 ```
 
-这意味着一个关键差别：
+### `--developer-single-player` 不是「离线模式」，是「只有单人」
 
-| | Horizon（现有链） | Sunrise（本链） |
+这一点必须说清楚，因为它决定了这条链是不是 `offline-port.patch` 的替代品。
+
+它不是「关掉登录」，而是**把整个账号层拆掉，再把所有走网络的路堵上**。源码里五处：
+
+| 位置 | 干什么 |
+|---|---|
+| `runtime/launch_options.rs` | `let session = if o.developer_single_player { Ok(None) }` —— `auth::current()` 恒空 |
+| `runtime/launch_options.rs` + `interface/developer_launch.rs` | 带 `--server` 或会话文件，**启动就失败** |
+| `interface/developer_launch.rs` | `lan_host`：`net.listen` 一开就拒 |
+| `interface/developer_launch.rs` | `join_server`：连任何远程服务器就拒 |
+| `world/integrated.rs` | `publish()`：「对局域网开放」按钮直接返回错误 |
+
+错误文案都是一句 `Offline developer session: single-player only.`
+连锁反应更麻烦：`lan/mod.rs` 的 `OnlineMode::lan()` 第一行是
+`crate::auth::current()?`，**没登录就生成不出 LAN 密钥对**。
+
+所以「单人 + 多人 + LAN 都能用」这个目标，Sunrise 原样**做不到**。和 Horizon 当年
+必须打 `offline-port.patch` 是同一件事：`--name` 只改显示名和离线 UUID，
+变不出一个 `AuthSession`。
+
+## 补丁：`offline-account.patch`
+
+145 行，4 个文件，全部在 `crates/sunrise-client/`，**不动 `launcher/`**。每处带
+`OFFLINE-PATCH:` 注释（共 7 处），方便对着上游 rebase。
+
+干两件事：
+
+1. **造一个离线账号。** `AuthSession::new(name, uuid, token)` 本来就是 public
+   （注释写着 "For tests and harnesses"），UUID 用现成的
+   `sunrise_core::md5::offline_uuid(name)`（标准 Java `OfflinePlayer:<name>`）。
+   token 是占位的，只在连 online-mode 服务器时才会被拿去问 Mojang——而离线客户端
+   本来就过不了那道验证。装上它的位置在 `game_dir` 切换**之后**，因为离线名要从
+   游戏目录里的 `sunrise-player.txt` 读。
+2. **拆掉那五处拦截。** `OnlineMode::lan()` 不再要求已登录——它自己的注释原本就写着
+   "an offline name hosts in offline mode"，是那行 `?` 把路堵了。
+
+为什么这样能通（上游本来就有这条路，只是被拦在外面）：
+
+- **主机侧** `lan/conn.rs`：`match online { Some(..) => authenticate(..), None => (offline_uuid(&hello.name), Vec::new()) }`
+  —— `None` 是 vanilla 标准离线模式，不是错误分支。
+- **客户端侧** `remote/connection.rs`：注释「An online-mode server gets the signed-in
+  account again」 —— 只有 online-mode 服务器才需要账号。
+- **多人按钮**：`allows_multiplayer` 初值就是 `true`，`poll_account()` 拿不到 session
+  时直接 return，不会把它改成 false。
+
+### 验证到哪一步了
+
+- ✅ 补丁能干净打到上游 `main`（`git apply --check`）
+- ✅ `cargo check -p sunrise-client --all-targets` 通过
+- ✅ `cargo clippy -p sunrise-client --all-targets -- -D warnings` 通过
+- ❌ **没有实机验证 LAN 能不能真进人** —— 这是最大的未知数，见下
+
+跑这几条的 workflow 是 `check-sunrise-offline-patch.yml`，只编译、不建包、
+不碰 `sunrise-offline` release。
+
+**还没验的**：一个离线主机的世界，另一台机器能不能连进来、能不能正常玩。
+上游代码路径是通的，但「代码路径通」和「真能玩」之间还有距离——
+尤其是玩家列表、皮肤、聊天这些依赖账号属性的地方，离线访客的 properties 是空的。
+
+## Horizon 与本链的差别
+
+|  | Horizon（现有链） | Sunrise（本链） |
 |---|---|---|
-| 源码补丁 | `offline-port.patch`，1070 行、21 个文件 | **不需要** |
-| 编译 | Rust 工具链 + 图形库，~90 min | 不编译，纯下载组装 |
+| 源码补丁 | `offline-port.patch`，1070 行、21 个文件 | `offline-account.patch`，145 行、4 个文件 |
+| 编译 | Rust 工具链 + 图形库，~90 min | 不编译，纯下载组装（补丁另需一次编译验证） |
 | 产物来源 | 上游源码 + 官方包 | 两个官方包，原样复制 |
-| 版本判定 | 解析 release body 正则 | `sunrise-release.json` 里的 `commit` |
+| 离线完整性 | 单人 + 多人 + LAN | 单人有；多人/LAN 待验证 |
 
 ## 怎么跑
 
@@ -114,6 +175,7 @@ pub fn data_dir() -> PathBuf {
 - 随包本体的 `--launch-api` 报 `"Dev 2026-11-24 · 3d34bbe"`，与版本目录名一致
   —— 说明版本没串包。
 - `--developer-single-player` 在 Launch API 的 options 里 —— 离线单人的入口在。
+  **注意它只管单人**，多人/LAN 见上文补丁那节。
 - **启动器认这个包**：`versions --installed` 列出 `dev-2026-11-24-3d34bbe`。
 - **版本被选中**：`settings` 报 `selected_version: "dev-2026-11-24-3d34bbe"`，玩家点
   Play 就走它。
@@ -150,6 +212,7 @@ Sunrise 的 bug。冒烟脚本把这类失败识别成 `skipped`，不判失败�
 | `check-launch-api.py` | 断版本目录名与本体自报的 build 一致 |
 | `check-launch-option.py` | 断某个选项还在 Launch API 里 |
 | `probe-cli.sh` | 打印启动器/本体的命令行形状（排查用） |
+| `offline-account.patch` | 离线账号 + 拆掉多人/LAN 的五处拦截（编译已验证，未实机玩过） |
 
 ## 用法
 
@@ -165,6 +228,10 @@ tar -xzf sunrise-linux-x86_64-offline-*.tar.gz
 ```sh
 ./data/versions/<tag>/sunrise-client --developer-single-player
 ```
+
+**注意**：现在 Release 里那个包**没打补丁**，所以只有单人。要多人/LAN 得自己套
+`offline-account.patch` 重编 `sunrise-client`，而重编需要 Rust 工具链——本机没有，
+只能走 CI。
 
 ## 许可
 
