@@ -145,13 +145,13 @@ fi
 # 两种情况这里都不判失败，因为包本身没坏 —— 坏的是假设，该由人看了结论再定。
 say "3. does the launcher list the bundled build?"
 if [[ "$LAUNCHER_USABLE" == "1" ]]; then
-  # 列版本用 `list`（Sunrise 的 CLI 是 account / list / mods / play / update，
-  # 没有 Horizon 那个 `versions`）。
-  LIST_OUT=$(timeout 180 "$L" list 2>&1) || LIST_RC=$?
+  # 列已装版本用 `versions`（Sunrise 的 CLI 里 `list` 不存在；`versions` 同时能列表
+  # 上游 release 和本机已装的构建）。
+  LIST_OUT=$(timeout 180 "$L" versions 2>&1) || LIST_RC=$?
   echo "$LIST_OUT" >> "$LOG"
   if [[ "${LIST_RC:-0}" -eq 0 ]]; then
     if grep -qF -- "$TAG" <<< "$LIST_OUT"; then
-      say "ok   list shows $TAG -- the packaged layout is usable by this launcher"
+      say "ok   versions shows $TAG -- the packaged layout is usable by this launcher"
     else
       say "unanswered: the launcher runs but does not list $TAG"
       echo "--       the packaged layout is not one this launcher reads; the game still runs"
@@ -160,7 +160,7 @@ if [[ "$LAUNCHER_USABLE" == "1" ]]; then
       echo "$LIST_OUT" | sed 's/^/     | /' | head -15
     fi
   else
-    note "list exited ${LIST_RC}: $(head -3 <<< "$LIST_OUT" | tr '\n' ' ')"
+    note "versions exited ${LIST_RC}: $(head -3 <<< "$LIST_OUT" | tr '\n' ' ')"
   fi
 else
   say "skipped: the launcher cannot run in this environment"

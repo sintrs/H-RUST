@@ -32,8 +32,10 @@ if [[ -x "$L" ]]; then
   timeout 60 "$L" --version 2>&1 | head -5 || echo "(exit $?)"
   section "launcher --help"
   timeout 60 "$L" --help 2>&1 | head -40 || echo "(exit $?)"
-  section "launcher list"
-  timeout 90 "$L" list 2>&1 | head -20 || echo "(exit $?)"
+  section "launcher versions"
+  timeout 90 "$L" versions 2>&1 | head -25 || echo "(exit $?)"
+  section "launcher settings (selected-version)"
+  timeout 60 "$L" settings 2>&1 | head -15 || echo "(exit $?)"
 else
   echo "no sunrise-launcher in $PKG"
 fi
