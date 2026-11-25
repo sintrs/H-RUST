@@ -4,7 +4,7 @@
 和仓库里另外两条（`release-offline.yml` / `release-game.yml`，跟
 `horizon-rust/horizon`）互不影响：不共用脚本、不共用 state、不共用 release。
 
-**状态：单人可用，多人/LAN 需要补丁（`offline-account.patch`，已能编译，未实机验证）。**
+**状态：单人 + 多人 + LAN 都通（靠「不经启动器、直连本体」绕过拦截，不需要任何补丁）。**
 CI 上已经跑通到「启动器接管随包版本并选中它」，产物发在 Release `sunrise-offline`。
 
 ## 为什么要试这一条
@@ -36,27 +36,20 @@ Sunrise 是同一套代码改名搬过去的，而且**本体自带一个离线�
 连锁反应更麻烦：`lan/mod.rs` 的 `OnlineMode::lan()` 第一行是
 `crate::auth::current()?`，**没登录就生成不出 LAN 密钥对**。
 
-所以「单人 + 多人 + LAN 都能用」这个目标，Sunrise 原样**做不到**。和 Horizon 当年
-必须打 `offline-port.patch` 是同一件事：`--name` 只改显示名和离线 UUID，
-变不出一个 `AuthSession`。
+所以「**带着这个 flag**，单人 + 多人 + LAN 都能用」做不到。但真正的结论在下一节：
+**只要不传这个 flag，就什么都不拦。**
 
-## 补丁：`offline-account.patch`
+## 关键：不传 flag 不等于没账号层
 
-145 行，4 个文件，全部在 `crates/sunrise-client/`，**不动 `launcher/`**。每处带
-`OFFLINE-PATCH:` 注释（共 7 处），方便对着上游 rebase。
+这是这条链最重要的一条，也是先把前面那段结论推翻的地方。
 
-干两件事：
+不传 `--developer-single-player` 时，`launch_options.rs` 走的是另一个分支：
 
-1. **造一个离线账号。** `AuthSession::new(name, uuid, token)` 本来就是 public
-   （注释写着 "For tests and harnesses"），UUID 用现成的
-   `sunrise_core::md5::offline_uuid(name)`（标准 Java `OfflinePlayer:<name>`）。
-   token 是占位的，只在连 online-mode 服务器时才会被拿去问 Mojang——而离线客户端
-   本来就过不了那道验证。装上它的位置在 `game_dir` 切换**之后**，因为离线名要从
-   游戏目录里的 `sunrise-player.txt` 读。
-2. **拆掉那五处拦截。** `OnlineMode::lan()` 不再要求已登录——它自己的注释原本就写着
-   "an offline name hosts in offline mode"，是那行 `?` 把路堵了。
+```rust
+Ok(None)   // 没有会话，但也没有任何拒绝
+```
 
-为什么这样能通（上游本来就有这条路，只是被拦在外面）：
+没有任何 `if session.is_none() { return Err(...) }`。于是：
 
 - **主机侧** `lan/conn.rs`：`match online { Some(..) => authenticate(..), None => (offline_uuid(&hello.name), Vec::new()) }`
   —— `None` 是 vanilla 标准离线模式，不是错误分支。
@@ -64,29 +57,97 @@ Sunrise 是同一套代码改名搬过去的，而且**本体自带一个离线�
   account again」 —— 只有 online-mode 服务器才需要账号。
 - **多人按钮**：`allows_multiplayer` 初值就是 `true`，`poll_account()` 拿不到 session
   时直接 return，不会把它改成 false。
+- **聊天密钥**：`remote_chat.rs` 只在 `r.online_mode` 为真时才 `prepare_chat_keys`，
+  离线的世界和 LAN 都不需要。
+- **局域网开放**：`publish()` 里那处拒绝是 flag 触发的，没有 flag 就不进那个分支。
 
-### 验证到哪一步了
+`auth::current()` 确实是空的，但空的后果只是「按离线模式办」，不是「禁止联网」。
+把顺序搞反了就会以为必须造一个 `AuthSession`——**那才是 `offline-account.patch` 想做的事，
+而它其实不必要。**
+
+### Horizon 也是这么绕过去的
+
+`tools/ci/offline-port.patch`（1070 行、21 个文件）全在 `launcher/src/`，`crates/` 一行未动。
+它的 `mark()` 不注入 `FLAG`，只 `env_remove`，让本体以「无会话」状态跑，离线身份靠 `--name`。
+
+这条链更进一步：**干脆不经过启动器**。`play-offline.sh` 直接 `exec` 本体的
+`sunrise-client`，启动器根本没机会塞参数。
+
+### 直连的第二个坑：`--resources`
+
+不传 flag 只解决了「拦不拦」，还要解决「起不起得来」。本体自己的默认值是：
+
+```rust
+let sibling = std::env::current_exe()?.parent()?.join("resources");
+resources: if sibling.join("sunrise-resources.json").exists() {
+    sibling                                            // 包里有 resources/ 就用它
+} else {
+    Path::new(".local/sunrise-client").join(VANILLA_VERSION)   // 否则相对 cwd
+}
+```
+
+包里没有 `resources/`，于是它退到**相对于工作目录**的 `.local/sunrise-client/26.3`。
+启动器准备工作文件时写的是版本目录里的 `<tag>/.local/sunrise-client/<ver>/`，
+两处对不上，首次运行必定报：
+
+> `Sunrise's prepared game files are missing: no sunrise-resources.json in ...`
+
+所以 `play-offline.sh` 自己找：先扫 `<tag>/.local/sunrise-client/*/sunrise-resources.json`，
+再退到 `<tag>/resources/`，找到就把 `--resources <那个目录>` 传下去。
+命令行上已经有 `--resources` 时不重复添加。找不到就直说「还没准备」并给出准备命令，
+不让玩家进到游戏里看一句堆栈。
+
+`SUNRISE_HOME` 指向包里的 `data/`，存档、`options.txt`、日志、mod 都在那儿，
+和启动器跑它时（`game_home()`）一致。
+
+准备那一步只有启动器有，`sunrise-ctl` 的错误文案原文就是
+`prepare it in the launcher first (sunrise-launcher prepare <tag>)`，所以包里写
+`./run-offline.sh prepare <tag>` 是通的。代码侧一旦发现资源不在就停在门口，
+这个分支已实测（退出码 1 + 提示文案），资源存在时的三条路径也都实测过。
+
+## 那 `offline-account.patch` 呢
+留着，但**不是必需品**。它是「如果哪天必须走启动器 Play 按钮」时的备用路线：
+造一个离线 `AuthSession`、拆掉五处拦截。
+
+- 145 行，4 个文件，全部在 `crates/sunrise-client/`，**不动 `launcher/`**。
+- 每处带 `OFFLINE-PATCH:` 注释（共 7 处），方便对着上游 rebase。
+- `AuthSession::new(name, uuid, token)` 本来就是 public（注释写着 "For tests and
+  harnesses"），UUID 用 `sunrise_core::md5::offline_uuid(name)`。
+- 已验证：`git apply --check` 干净、`cargo check` 过、`clippy -D warnings` 过
+  （workflow `check-sunrise-offline-patch.yml`，两轮全绿）。
+
+为什么没在用：**公开源码编不出本体。** `Cargo.toml` 声明 78 个 workspace members，
+其中 44 个目录不存在——包括真正的游戏二进制 `sunrise-official`、`sunrise-protocol`、
+`sunrise-server`、`sunrise-port-pack`。`cargo check -p sunrise-client` 能过只是因为
+依赖树没碰到那些。要真打补丁就得重编 `sunrise-client`，而它链接 `sunrise-protocol`，
+拿不到。
+
+## 验证到哪一步了
 
 - ✅ 补丁能干净打到上游 `main`（`git apply --check`）
 - ✅ `cargo check -p sunrise-client --all-targets` 通过
 - ✅ `cargo clippy -p sunrise-client --all-targets -- -D warnings` 通过
-- ❌ **没有实机验证 LAN 能不能真进人** —— 这是最大的未知数，见下
-
-跑这几条的 workflow 是 `check-sunrise-offline-patch.yml`，只编译、不建包、
-不碰 `sunrise-offline` release。
-
-**还没验的**：一个离线主机的世界，另一台机器能不能连进来、能不能正常玩。
-上游代码路径是通的，但「代码路径通」和「真能玩」之间还有距离——
-尤其是玩家列表、皮肤、聊天这些依赖账号属性的地方，离线访客的 properties 是空的。
+- ✅ `PLAY-OFFLINE.sh` 能起本体（`--launch-api` 返回正常，`--quickPlayMultiplayer`
+  在 options 里）
+- ✅ `PLAY-OFFLINE.sh` 的资源发现：未准备 → 退出码 1 + 明确提示；已准备 → 正确注入
+  `--resources`；自带 `--resources` 不重复；跨目录绝对路径调用正常
+- ✅ `offline-wrapper.sh` 参数过滤实测：带空格路径、单引号、`$`、空串都原样保留；
+  有 flag 时滤掉、无 flag 时整串透传
+- ❌ **没有实机验证 LAN 能不能真进人。** 代码路径是通的，但「路径通」和「真能玩」
+  之间还有距离——尤其玩家列表、皮肤、聊天这些依赖账号属性的地方，离线访客的
+  properties 是空的。
+- ❌ **没有真本体跑过**（本机没有可用的真二进制 + 没有显示服务），
+  `--resources` 那一段是照源码反推 + 假二进制验 argv。
 
 ## Horizon 与本链的差别
 
 |  | Horizon（现有链） | Sunrise（本链） |
 |---|---|---|
-| 源码补丁 | `offline-port.patch`，1070 行、21 个文件 | `offline-account.patch`，145 行、4 个文件 |
-| 编译 | Rust 工具链 + 图形库，~90 min | 不编译，纯下载组装（补丁另需一次编译验证） |
+| 源码补丁 | `offline-port.patch`，1070 行、21 个文件，改启动器 | 不需要（`offline-account.patch` 仅作备用，未用） |
+| 编译 | Rust 工具链 + 图形库，~90 min | 不编译，纯下载组装 |
 | 产物来源 | 上游源码 + 官方包 | 两个官方包，原样复制 |
-| 离线完整性 | 单人 + 多人 + LAN | 单人有；多人/LAN 待验证 |
+| 离线入口 | 启动器里点 Play | `PLAY-OFFLINE.sh` 直连本体 |
+| 离线完整性 | 单人 + 多人 + LAN | 单人 + 多人 + LAN |
 
 ## 怎么跑
 
@@ -128,7 +189,9 @@ Actions → Build Sunrise offline (experimental) → Run workflow
 解压不套目录：
 
 ```
-run-offline.sh            启动入口（PLAY.sh 是它的软链接）
+play-offline.sh           玩这个：直连本体，不经启动器（PLAY-OFFLINE.sh 是软链接）
+run-offline.sh            启动启动器（能看/能改设置，但没有离线账号，玩不了）
+offline-wrapper.sh        走启动器时的保险：滤掉 --developer-single-player
 sunrise-launcher          官方启动器，未做任何修改
 data/                     启动器自己的数据目录
   versions/<build>/       官方 sunrise-linux-x86_64.tar.gz 原样解开
@@ -174,11 +237,14 @@ pub fn data_dir() -> PathBuf {
 - 组装出来的包 103 MB，结构正确，解压不套目录。
 - 随包本体的 `--launch-api` 报 `"Dev 2026-11-24 · 3d34bbe"`，与版本目录名一致
   —— 说明版本没串包。
-- `--developer-single-player` 在 Launch API 的 options 里 —— 离线单人的入口在。
-  **注意它只管单人**，多人/LAN 见上文补丁那节。
+- `--developer-single-player` 在 Launch API 的 options 里 —— 但**不要用它**，
+  它把多人/LAN 全堵上。见上文。
+- `--quickPlayMultiplayer` 也在 options 里，是多人入口。
 - **启动器认这个包**：`versions --installed` 列出 `dev-2026-11-24-3d34bbe`。
 - **版本被选中**：`settings` 报 `selected_version: "dev-2026-11-24-3d34bbe"`，玩家点
   Play 就走它。
+- **`PLAY-OFFLINE.sh` 能起本体**：实测 `./play-offline.sh --launch-api` 正常返回。
+- **`offline-wrapper.sh` 参数保真**：带空格路径、单引号、`$`、空串全部原样透传。
 
 最后两条是这条链存在的意义，也是唯一不能靠读代码确认的。
 
@@ -207,12 +273,13 @@ Sunrise 的 bug。冒烟脚本把这类失败识别成 `skipped`，不判失败�
 | `probe-sunrise.py` | 读两个仓库当前发布什么，输出 `build`/`commit`/`launcher_tag` |
 | `fetch-sunrise-asset.sh` | 下资产，对 `SHA256SUMS` + GitHub digest 双重校验 |
 | `check-downloaded-build.py` | 下载到的 `sunrise-release.json` 与探测到的 commit 对账 |
-| `make-sunrise-package.sh` | 拼包（含 `run-offline.sh`） |
+| `make-sunrise-package.sh` | 拼包（含 `play-offline.sh` / `run-offline.sh` / `offline-wrapper.sh`） |
 | `smoke-sunrise-package.sh` | 解开、跑、断言 |
 | `check-launch-api.py` | 断版本目录名与本体自报的 build 一致 |
 | `check-launch-option.py` | 断某个选项还在 Launch API 里 |
 | `probe-cli.sh` | 打印启动器/本体的命令行形状（排查用） |
-| `offline-account.patch` | 离线账号 + 拆掉多人/LAN 的五处拦截（编译已验证，未实机玩过） |
+| `offline-wrapper.sh` | 滤掉 `--developer-single-player`（走启动器时的保险） |
+| `offline-account.patch` | 备用：离线账号 + 拆五处拦截。编译已验证，产物未使用 |
 
 ## 用法
 
@@ -220,18 +287,27 @@ Release 页的 `sunrise-offline` 附件，解开：
 
 ```sh
 tar -xzf sunrise-linux-x86_64-offline-*.tar.gz
+./run-offline.sh prepare <tag>        # 只需一次：从你自己的 Minecraft 准备文件
+./PLAY-OFFLINE.sh                      # 单人 + LAN + 离线服务器都从这儿进
+./PLAY-OFFLINE.sh --name YourName      # 用你的名字
+./PLAY-OFFLINE.sh --server HOST        # 进离线服务器
+```
+
+`<tag>` 就是 `data/versions/` 下那个目录名，例如 `dev-2026-11-24-3d34bbe`。
+也可以 `./run-offline.sh` 进界面点 Play，第一次启动会自动准备。
+
+想走启动器（改 Java 设置之类的）：
+
+```sh
 ./run-offline.sh
 ```
 
-想直接起本体、完全不碰启动器：
+启动器里点 Play 会带上 `--developer-single-player`，于是只剩单人。想从启动器进去
+又要有多人/LAN，就把该 profile 的 launch 命令挂到 `offline-wrapper.sh` 上。
 
-```sh
-./data/versions/<tag>/sunrise-client --developer-single-player
-```
-
-**注意**：现在 Release 里那个包**没打补丁**，所以只有单人。要多人/LAN 得自己套
-`offline-account.patch` 重编 `sunrise-client`，而重编需要 Rust 工具链——本机没有，
-只能走 CI。
+**注意**：`offline-account.patch` 现在没用在产物里——不需要它。留着是因为它把
+「如何在不改二进制的前提下造离线账号」这条路写清楚了，万一上游哪天改了「不传 flag
+就报错」，它就是下一手。
 
 ## 许可
 

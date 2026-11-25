@@ -53,16 +53,22 @@ PKG="$BASE/extract"
 # 启动器包自带的 LICENSE / LICENSES/ 必须留着（Sunrise 本体是 PolyForm Shield，
 # 分发时得带上），所以它们在白名单里，不是意外闯入的东西。
 EXTRA=$(ls -A "$PKG" | grep -vx -e sunrise-launcher -e data -e PLAY-OFFLINE.txt -e BUILD-INFO.txt \
-                                      -e LICENSE -e LICENSES -e run-offline.sh -e PLAY.sh || true)
+                                      -e LICENSE -e LICENSES -e run-offline.sh \
+                                      -e play-offline.sh -e PLAY-OFFLINE.sh -e offline-wrapper.sh || true)
 if [[ -n "$EXTRA" ]]; then
   bad "the package unpacks with unexpected top-level entries: $(echo "$EXTRA" | tr '\n' ' ')"
 fi
 [[ -x "$PKG/sunrise-launcher" ]] || { bad "the package has no executable sunrise-launcher"; exit 1; }
 [[ -x "$PKG/run-offline.sh" ]] || { bad "the package has no run-offline.sh to point the launcher at data/"; exit 1; }
+# 玩游戏的入口不是 run-offline.sh 而是 PLAY-OFFLINE.sh：不经过启动器，所以启动器
+# 那个「只有单人」的 flag 永远不会被传下去。
+[[ -x "$PKG/play-offline.sh" ]] || { bad "the package has no play-offline.sh to start the build without the launcher"; exit 1; }
+[[ -L "$PKG/PLAY-OFFLINE.sh" ]] || { bad "the package has no PLAY-OFFLINE.sh symlink for the discoverable entry point"; exit 1; }
+[[ -x "$PKG/offline-wrapper.sh" ]] || { bad "the package has no offline-wrapper.sh for launcher-side launches"; exit 1; }
 [[ -d "$PKG/data/versions/$TAG" ]] || { bad "the package has no bundled build at data/versions/$TAG"; exit 1; }
 CLIENT="$PKG/data/versions/$TAG/sunrise-client"
 [[ -x "$CLIENT" ]] || { bad "the bundled build $TAG has no executable sunrise-client"; exit 1; }
-say "ok   top level is launcher + data/versions/$TAG + run-offline.sh"
+say "ok   top level is launcher + data/versions/$TAG + PLAY-OFFLINE.sh + run-offline.sh"
 
 # --- 一次性的运行环境 -------------------------------------------------------
 # 每个测试都用一份**新解开的包**，因为 run-offline.sh 会把启动器指向包里那个 data/，
@@ -184,6 +190,39 @@ for f in sunrise-client sunrise-prepare PLAY.txt; do
       || bad "$f is missing from the version folder"
   fi
 done
+
+# --- 玩的入口自己能不能起来 ---------------------------------------------------
+# 前面验的是「本体这版对不对」，这里验「玩家点那个脚本会发生什么」。两条分支都要：
+# 没准备过时必须停住并说清怎么准备（而不是把窗口闪一下就没），准备过时必须把
+# `--resources` 指对 —— 否则本体默认去 cwd 找 `.local/sunrise-client/<ver>`，
+# 那个路径在包里根本不存在，游戏会在加载画面里报「prepared game files are missing」。
+say "5. play-offline.sh behaves on both paths"
+PLAY_PKG="$BASE/extract-play"
+mkdir -p "$PLAY_PKG"
+tar -xzf "$TGZ" -C "$PLAY_PKG" --no-same-owner --touch 2>/dev/null || { bad "cannot unpack $TGZ a second time"; exit 1; }
+
+UNPREP_OUT=$("$PLAY_PKG/PLAY-OFFLINE.sh" 2>&1) && UNPREP_RC=0 || UNPREP_RC=$?
+if [[ "$UNPREP_RC" -ne 0 ]] && grep -q 'not prepared' <<< "$UNPREP_OUT"; then
+  say "ok   with no prepared files it stops and says how to prepare them (exit $UNPREP_RC)"
+else
+  bad "PLAY-OFFLINE.sh with no prepared files exited $UNPREP_RC instead of pointing at the prepare step"
+  echo "$UNPREP_OUT" | sed 's/^/     | /' | head -10
+fi
+
+# 造假清单：只验脚本会不会把 --resources 指到那个目录，不验资源内容。
+# 加了假清单之后，脚本必须**不再**报「未准备」——它要么带着 --resources 起本体
+# （二进制能跑时），要么在更后面失败（缺真实资源内容、没有显示服务），
+# 两种都算这一条通过：区别「资源找不到」和「资源在但内容不对」正是脚本的职责。
+FAKE_RES="$PLAY_PKG/data/versions/$TAG/.local/sunrise-client/26.3"
+mkdir -p "$FAKE_RES"
+: > "$FAKE_RES/sunrise-resources.json"
+PREP_OUT=$("$PLAY_PKG/PLAY-OFFLINE.sh" 2>&1) && PREP_RC=0 || PREP_RC=$?
+if grep -q 'not prepared' <<< "$PREP_OUT"; then
+  bad "PLAY-OFFLINE.sh still reports the files as unprepared when the prepared folder is there"
+  echo "$PREP_OUT" | sed 's/^/     | /' | head -10
+else
+  say "ok   with a prepared folder it gets past the resource check (exit $PREP_RC)"
+fi
 
 echo
 if [[ "$FAILS" -gt 0 ]]; then
