@@ -109,22 +109,24 @@ index 12bede6..f90e2ba 100644
          // world that exists opens; else the title screen. --world also creates one.
          if let Some(world) = o.quick_play.take() {
 diff --git a/crates/sunrise-client/src/game/world/integrated.rs b/crates/sunrise-client/src/game/world/integrated.rs
-index 68da0ea..c5c0261 100644
+index 68da0ea..3dce0fe 100644
 --- a/crates/sunrise-client/src/game/world/integrated.rs
 +++ b/crates/sunrise-client/src/game/world/integrated.rs
-@@ -1239,9 +1239,9 @@ impl Game<'_> {
+@@ -1238,11 +1238,9 @@ impl Game<'_> {
+     /// one) and announce the world. The socket is bound at once so a busy
      /// port fails here; the hub starts listening once it is at hand.
      pub(super) fn publish(&mut self, settings: LanSettings) -> std::result::Result<u16, String> {
-         if self.options.developer_single_player {
+-        if self.options.developer_single_player {
 -            return Err(sunrise_client::lang::get(
 -                "sunrise.developer_offline.single_player",
 -            ));
-+            // OFFLINE-PATCH: was "an offline session may not publish". Offline LAN
-+            // hosting is a supported mode now; the hub simply runs in offline
-+            // online-mode (no session service to verify guests with).
-         }
+-        }
++        // OFFLINE-PATCH: upstream refused this for an offline session. Offline LAN
++        // hosting is a supported mode now; the hub simply runs in offline
++        // online-mode (no session service to verify guests with).
          let Some(s) = self.serving.as_mut() else {
              return Err("not an integrated server".into());
+         };
 diff --git a/crates/sunrise-client/src/lan/mod.rs b/crates/sunrise-client/src/lan/mod.rs
 index cbbaba1..946c169 100644
 --- a/crates/sunrise-client/src/lan/mod.rs
