@@ -4,9 +4,13 @@ name: Build offline (offline launcher + official game)
 # - 游戏本体：官方 nightly 包**原样复制**，不编译
 # - 启动器：从同一 nightly 的**上游源码**编译，然后打 offline-port.patch
 # - 产物：滚动 Release `nightly-offline`（每次覆盖附件，名字带北京时间），另留一份 run artifact
+#
+# 2026-11-25：schedule 已停。上游 `horizon-rust/horizon` 整个组织 404，cron 每 35 分钟
+# 只换来一次 `monitor failed: HTTP Error 404`。改成只剩手动触发 —— 上游若回来，把下面
+# 那两行 schedule 取消注释即可恢复。试 Sunrise 的那条见 release-sunrise-offline.yml。
 on:
-  schedule:
-    - cron: '*/35 * * * *'
+  # schedule:
+  #   - cron: '*/35 * * * *'
   workflow_dispatch:
     inputs:
       force:

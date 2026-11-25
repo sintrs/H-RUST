@@ -2,9 +2,12 @@ name: Build game (upstream nightly verbatim)
 
 # 出「本体」：游戏二进制直接复制上游 nightly 官方包，一个字节都不重编。
 # 只上传 Actions artifact，不发 GitHub Release。
+#
+# 2026-11-25：schedule 已停。上游 `horizon-rust/horizon` 整个组织 404，cron 每 30 分钟
+# 只换来一次 404。改成只剩手动触发 —— 上游若回来，把下面那两行 schedule 取消注释即可。
 on:
-  schedule:
-    - cron: '*/30 * * * *'
+  # schedule:
+  #   - cron: '*/30 * * * *'
   workflow_dispatch:
     inputs:
       force:
