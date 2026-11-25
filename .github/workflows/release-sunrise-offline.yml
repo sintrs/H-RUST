@@ -58,6 +58,19 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # The launcher is a GUI binary and links against the X11/Wayland stack even when
+      # it is only asked for --version. Without these the smoke test can only skip its
+      # launcher checks, and skipping them leaves the one question this chain exists to
+      # answer unanswered. libxkbcommon-x11 is the one that bites first.
+      - name: Install the libraries the launcher links against
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libxkbcommon-x11-0 libxkbcommon0 libwayland-client0 libx11-xcb1 \
+            libxcb1 libxcb-randr0 libxcb-shape0 libxcb-xkb1 \
+            libfontconfig1 libvulkan1 libasound2 libudev1
+
       - name: Read what upstream currently publishes
         id: probe
         run: |
