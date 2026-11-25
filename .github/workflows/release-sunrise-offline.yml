@@ -1,0 +1,189 @@
+# 从 Sunrise 官方仓库取产物、拼成离线包、发到滚动 Release `sunrise-offline`。
+#
+# 这是一条**试验链**，和 tools/ci/ 下那两条（Horizon）完全独立：
+#
+#   Horizon（现有）                           Sunrise（这条）
+#   horizon-rust/horizon          → 全 404    sunrise-org/sunrise + sunrise-launcher
+#   需要打 offline-port.patch                **不打补丁**，官方就带离线入口
+#   编译启动器（Rust 工具链 + 图形库）        纯下载 + 组装，不编译
+#   state/*.json 记录版本                    无状态，每次都问上游要最新的
+#
+# 之所以不需要补丁：Sunrise 本体自带 `--developer-single-player`（单人、不登录，
+# 公开在 Launch API 契约里）和 `--name`（多人身份），启动器也已经是官方产物。
+# 拼起来就是一个能玩的包 —— 但启动器**认不认**这个版面，正是这条链要回答的问题。
+#
+# 触发：只有 workflow_dispatch。**刻意不挂 schedule** —— Horizon 那两条挂了 cron
+# 之后，上游 404 就变成每半小时一次的失败通知；这条在验证出结论之前不该自动跑。
+name: Build Sunrise offline (experimental)
+
+on:
+  workflow_dispatch:
+    inputs:
+      channel:
+        description: '取哪个通道（dev = 最新的 nightly 之外的构建；nightly = 上游推荐渠道）'
+        type: choice
+        options: [dev, nightly]
+        default: dev
+      build_tag:
+        description: '固定某个 release tag（填了就盖过 channel，例：dev-2026-11-24-3d34bbe）'
+        type: string
+        default: ''
+      launcher_tag:
+        description: '固定启动器 release tag（留空取最新，例：v1.3.1）'
+        type: string
+        default: ''
+      publish:
+        description: '发到 Release sunrise-offline（关掉只留 artifact）'
+        type: boolean
+        default: false
+      dry_run:
+        description: '只探测版本、不下载不组包'
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+
+concurrency:
+  group: h-rust-sunrise-offline
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: Assemble the Sunrise offline package
+    runs-on: ubuntu-22.04
+    timeout-minutes: 60
+    env:
+      GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Read what upstream currently publishes
+        id: probe
+        run: |
+          set -euo pipefail
+          args=(--channel "${{ inputs.channel }}")
+          if [[ -n "${{ inputs.build_tag }}" ]]; then args+=(--build-tag "${{ inputs.build_tag }}"); fi
+          if [[ -n "${{ inputs.launcher_tag }}" ]]; then args+=(--launcher-tag "${{ inputs.launcher_tag }}"); fi
+          python3 sunrise/probe-sunrise.py "${args[@]}"
+
+      - name: Stop here on a dry run
+        if: inputs.dry_run
+        run: |
+          set -euo pipefail
+          echo "build:    ${{ steps.probe.outputs.build }}"
+          echo "commit:   ${{ steps.probe.outputs.commit }}"
+          echo "launcher: ${{ steps.probe.outputs.launcher_tag }}"
+          echo "(dry run: nothing downloaded)"
+
+      - name: Fetch the verified assets
+        if: ${{ !inputs.dry_run }}
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          bash sunrise/fetch-sunrise-asset.sh \
+            sunrise-org/sunrise-launcher "${{ steps.probe.outputs.launcher_tag }}" \
+            sunrise-launcher-linux-x86_64.tar.gz dist/launcher.tar.gz
+          bash sunrise/fetch-sunrise-asset.sh \
+            sunrise-org/sunrise "${{ steps.probe.outputs.game_tag }}" \
+            sunrise-linux-x86_64.tar.gz dist/game.tar.gz
+          # Re-read sunrise-release.json from the release we actually downloaded and
+          # refuse to package if the commit moved. The rolling `nightly` tag replaces its
+          # assets in place, so the file read during the probe can be newer or older than
+          # what the download above got; the download's own SHA256SUMS only proves it
+          # matches itself.
+          bash sunrise/fetch-sunrise-asset.sh \
+            sunrise-org/sunrise "${{ steps.probe.outputs.game_tag }}" \
+            sunrise-release.json dist/sunrise-release.json
+          python3 sunrise/check-downloaded-build.py \
+            "${{ steps.probe.outputs.commit }}" dist/sunrise-release.json
+          ls -lh dist/
+
+      - name: Assemble the package
+        if: ${{ !inputs.dry_run }}
+        run: |
+          set -euo pipefail
+          bash sunrise/make-sunrise-package.sh \
+            dist/launcher.tar.gz dist/game.tar.gz \
+            "${{ steps.probe.outputs.commit }}" package \
+            "${{ steps.probe.outputs.version_tag }}"
+
+      # Written before the smoke test so a red run still ships the file with the log.
+      - name: Write build info
+        if: ${{ !inputs.dry_run }}
+        run: |
+          set -euo pipefail
+          {
+            echo "version:    ${{ steps.probe.outputs.build }}"
+            echo "commit:     ${{ steps.probe.outputs.commit }}"
+            echo "launcher:   ${{ steps.probe.outputs.launcher_tag }} (official, unmodified)"
+            echo "game:       official sunrise-linux-x86_64.tar.gz, copied verbatim"
+            echo "published:  $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+            echo
+            echo "Unzip, then either:"
+            echo "  ./sunrise-launcher                        (the launcher, if it lists this build)"
+            echo "  ./data/versions/<tag>/sunrise-client --developer-single-player"
+            echo "                                            (single player, no sign-in)"
+            echo "  ./data/versions/<tag>/sunrise-client --name YourName"
+            echo "                                            (multiplayer identity)"
+            echo "First run also needs the game files prepared from your own Minecraft 26.3:"
+            echo "  ./data/versions/<tag>/sunrise-prepare --prepare --server-jar PATH"
+          } > package/BUILD-INFO.txt
+
+      - name: Smoke-test the package
+        if: ${{ !inputs.dry_run }}
+        env:
+          SMOKE_TMPDIR: ${{ runner.temp }}/smoke
+        run: |
+          set -euo pipefail
+          bash sunrise/smoke-sunrise-package.sh "$PACKAGE_ASSET" "${{ steps.probe.outputs.version_tag }}"
+
+      # The open question this experiment exists to answer: does the Sunrise launcher
+      # list a build that was simply copied into data/versions/? The smoke test reports
+      # it as answered or unanswered rather than failing; this step prints the raw CLI
+      # shape into the job log so the answer is readable without re-running anything.
+      # Runs even when an earlier step failed, so a red run still says why.
+      - name: Record what the launcher's CLI looks like
+        if: ${{ !inputs.dry_run && always() }}
+        run: |
+          set -uo pipefail
+          ASSET=$(ls package/*.tar.gz 2>/dev/null | head -1)
+          [[ -n "$ASSET" ]] || { echo "no package was built, nothing to probe"; exit 0; }
+          mkdir -p extracted
+          tar -xzf "$ASSET" -C extracted --no-same-owner --touch || true
+          bash sunrise/probe-cli.sh extracted || true
+          [[ -f package/BUILD-INFO.txt ]] && cat package/BUILD-INFO.txt
+
+      - name: Publish to the rolling release
+        if: ${{ !inputs.dry_run && inputs.publish }}
+        run: |
+          set -euo pipefail
+          TAG=sunrise-offline
+          NAME="Sunrise offline (Linux x86_64)"
+          NOTE="Built from Sunrise ${{ steps.probe.outputs.build }} (${{ steps.probe.outputs.commit }}) with the official launcher ${{ steps.probe.outputs.launcher_tag }}. Both packages copied verbatim; nothing is compiled or patched."
+          ASSET="$PACKAGE_ASSET"
+
+          # One asset per release: the name carries the build time, so drop the previous.
+          for old in $(gh release view "$TAG" --json assets -q '.assets[].name' 2>/dev/null); do
+            [[ "$old" == "$(basename "$ASSET")" ]] || gh release delete-asset "$TAG" "$old" --yes
+          done
+
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release upload "$TAG" "$ASSET" --clobber
+          else
+            gh release create "$TAG" "$ASSET" \
+              --title "$NAME" \
+              --notes "$NOTE" \
+              --latest=false \
+              --prerelease
+          fi
+          gh release edit "$TAG" --notes "$NOTE" --title "$NAME"
+
+      - name: Keep the package as a run artifact
+        if: ${{ !inputs.dry_run }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: sunrise-offline-${{ steps.probe.outputs.version_tag }}
+          path: package/
+          retention-days: 3
+          if-no-files-found: error
