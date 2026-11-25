@@ -108,7 +108,9 @@ resources: if sibling.join("sunrise-resources.json").exists() {
 `SUNRISE_HOME` 指向包里的 `data/`，存档、`options.txt`、日志、mod 都在那儿，
 和启动器跑它时（`game_home()`）一致。
 
-准备那一步只有启动器有，`sunrise-ctl` 的错误文案原文就是
+准备那一步启动器是唯一**打包好的**入口（不变），但手跑同在版本目录里的 `sunrise-prepare`
+也行，实测 16 秒（`--server-jar` 用启动器缓存过的 26.3 server jar，`--minecraft-dir` 指自己的
+`~/.minecraft`，全程无网）。`sunrise-ctl` 的错误文案原文是
 `prepare it in the launcher first (sunrise-launcher prepare <tag>)`，所以包里写
 `./run-offline.sh prepare`（版本已选中，不用带参数；要指定就 `--version <tag>`，
 **裸写 tag 会被 clap 拒成 `unexpected argument`** —— 这条踩过，别再写错）。
@@ -169,6 +171,9 @@ resources: if sibling.join("sunrise-resources.json").exists() {
 - ✅ **离线 LAN 真进人（同日 19:15）**：`sunrise-ctl lan open 25566` → 监听 `0.0.0.0:25566`；
   第二个实例 `--server 192.168.5.55:25566 --name Guest` 进世界，主机 `lan status` 有
   Guest（loaded/placed），chat 有 `Guest joined the game`
+- ✅ **从自己的 Minecraft 准备（同日 19:45）**：空目录 + `sunrise-prepare --prepare
+  --server-jar <缓存的 26.3 server jar> --minecraft-dir ~/.minecraft`，16 s 出 730 MB 资源，
+  再用这份资源直启 + `lan open 25567` + 访客 `Guest2` 进世界，全程无网
 - ❌ **没测跨设备**：两次都是同一台机（经 LAN 地址走本机协议栈），另一台设备 + 防火墙放行未验
 - ❌ **离线访客的属性是空的**：皮肤是默认皮，聊天没有签名（离线模式本来不适用），
   身份不验证——只适合可信局域网
