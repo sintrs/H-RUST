@@ -61,6 +61,53 @@ jobs:
           "$LAUNCHER" install "${{ inputs.build_tag }}"
           ls -1 "$HOME/.local/share/sunrise/launcher/versions"
 
+      - name: Fetch Minecraft 26.3 from Mojang
+        # prepare needs a Minecraft install; Mojang publishes it without an account,
+        # so a runner can have one as long as we fetch it ourselves.
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json, pathlib, urllib.request
+
+          def get(url):
+              with urllib.request.urlopen(url, timeout=180) as r:
+                  return r.read()
+
+          def save(url, path):
+              path.parent.mkdir(parents=True, exist_ok=True)
+              if not path.exists():
+                  path.write_bytes(get(url))
+
+          man = json.loads(get("https://piston-meta.mojang.com/mc/game/version_manifest_v2.json"))
+          entry = next(v for v in man["versions"] if v["id"] == "26.3")
+          data = json.loads(get(entry["url"]))
+          root = pathlib.Path.home() / ".minecraft"
+          vdir = root / "versions" / "26.3"
+          vdir.mkdir(parents=True, exist_ok=True)
+          (vdir / "26.3.json").write_text(json.dumps(data))
+          save(data["downloads"]["client"]["url"], vdir / "26.3.jar")
+          count = 0
+          for lib in data.get("libraries", []):
+              downloads = lib.get("downloads") or {}
+              arts = [downloads.get("artifact")] + list((downloads.get("classifiers") or {}).values())
+              for art in arts:
+                  if art and art.get("path"):
+                      save(art["url"], root / "libraries" / art["path"])
+                      count += 1
+          print("libraries saved:", count)
+          PY
+          du -sh "$HOME/.minecraft"
+
+      - name: Prepare the build from that install
+        run: |
+          set -euo pipefail
+          "$LAUNCHER" prepare --version "${{ inputs.build_tag }}" --minecraft "$HOME/.minecraft" --json
+
+      - name: Switch the profile to the build
+        run: |
+          set -euo pipefail
+          "$LAUNCHER" switch "${{ inputs.build_tag }}" --json
+
       - name: Install the pinned Rust
         run: |
           set -euo pipefail
