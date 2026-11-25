@@ -67,35 +67,29 @@ jobs:
           "$LAUNCHER" rust install
           "$LAUNCHER" rust status
 
-      - name: Fetch the mod sources
+      - name: Install the mods into the profile
         run: |
           set -euo pipefail
-          mkdir -p /tmp/mods
-          for u in ${{ inputs.mod_urls }}; do
-            name=$(basename "$u" .smod)
-            dir="/tmp/mods/$(printf '%s' "$name" | sed 's/-[0-9][0-9.]*$//')"
-            mkdir -p "$dir"
-            curl -fsSL --retry 3 -o /tmp/one.smod "$u"
-            unzip -q /tmp/one.smod -d "$dir"
-            echo "fetched $dir"
+          for slug in creature fireflies; do
+            echo "=== $slug"
+            "$LAUNCHER" mods install "$slug" --source sunrise --json || echo "FAILED $slug"
           done
-          ls -1 /tmp/mods
+          "$LAUNCHER" mods list || true
 
       - name: Compile
         run: |
           set -euo pipefail
           tag="${{ inputs.build_tag }}"
-          for d in /tmp/mods/*/; do
-            echo "=== $d"
-            "$LAUNCHER" native-build "$d" --version "$tag" --trust-native-code --json || echo "FAILED $d"
-          done
+          ls -la "$HOME/.local/share/sunrise/game/sunrise-mods" 2>/dev/null || true
+          "$LAUNCHER" native-build --version "$tag" --json || echo "FAILED"
 
       - name: Collect what came out
         if: always()
         run: |
           set -euo pipefail
           mkdir -p out
-          find "$HOME/.local/share/sunrise" -type f \( -name '*.smod' -o -name '*.so' \) -print | tee /tmp/found.txt || true
+          find "$HOME/.local/share/sunrise/game" "$HOME/.local/share/sunrise/launcher/native" \
+            -type f \( -name '*.smod' -o -name '*.so' \) -print 2>/dev/null | tee /tmp/found.txt || true
           while read -r f; do
             mkdir -p "out/$(dirname "${f#$HOME/.local/share/sunrise/}")"
             cp -a "$f" "out/${f#$HOME/.local/share/sunrise/}"
