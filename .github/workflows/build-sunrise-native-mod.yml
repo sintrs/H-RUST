@@ -25,6 +25,10 @@ jobs:
   build:
     runs-on: ubuntu-24.04
     timeout-minutes: 90
+    env:
+      # Shared runner IPs hit GitHub's anonymous rate limit; the launcher reads
+      # this name to authenticate its release lookups.
+      SUNRISE_GITHUB_TOKEN: ${{ github.token }}
     steps:
       - name: Runtime libraries the launcher links
         # A bare runner has no xkbcommon, and the launcher is an eframe binary
