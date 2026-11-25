@@ -1,0 +1,97 @@
+name: Build a Sunrise native mod (manual)
+
+# Native mods pin `[native] sunrise = <commit>`, so they can only be compiled
+# against that exact build. The launcher does the compiling; this workflow just
+# gives it a machine that is not the user's desktop.
+on:
+  workflow_dispatch:
+    inputs:
+      build_tag:
+        description: Sunrise build tag to compile against
+        required: true
+        default: dev-2026-11-24-3d34bbe
+      mod_urls:
+        description: Space separated .smod URLs, library mods first
+        required: true
+        default: >-
+          https://github.com/EAnathos/sunrise-creatures/releases/download/creature/v0.3.5/creature-0.3.5.smod
+          https://github.com/EAnathos/sunrise-creatures/releases/download/fireflies/v0.1.3/fireflies-0.1.3.smod
+      launcher_tag:
+        description: Launcher release tag
+        required: true
+        default: launcher@1.3.2
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    steps:
+      - name: Unpack the launcher
+        run: |
+          set -euo pipefail
+          url="https://github.com/sunrise-org/sunrise/releases/download/${{ inputs.launcher_tag }}/sunrise-launcher-linux-x86_64.tar.gz"
+          curl -fsSL --retry 3 -o /tmp/launcher.tar.gz "$url"
+          mkdir -p /tmp/lx
+          tar -xzf /tmp/launcher.tar.gz -C /tmp/lx
+          found=$(find /tmp/lx -name 'sunrise-launcher' -type f | head -1)
+          chmod +x "$found"
+          echo "LAUNCHER=$found" >> "$GITHUB_ENV"
+          "$found" --version
+
+      - name: Install the build
+        run: |
+          set -euo pipefail
+          "$LAUNCHER" install "${{ inputs.build_tag }}"
+          ls -1 "$HOME/.local/share/sunrise/launcher/versions"
+
+      - name: Install the pinned Rust
+        run: |
+          set -euo pipefail
+          "$LAUNCHER" rust install
+          "$LAUNCHER" rust status
+
+      - name: Fetch the mod sources
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/mods
+          for u in ${{ inputs.mod_urls }}; do
+            name=$(basename "$u" .smod)
+            dir="/tmp/mods/$(printf '%s' "$name" | sed 's/-[0-9][0-9.]*$//')"
+            mkdir -p "$dir"
+            curl -fsSL --retry 3 -o /tmp/one.smod "$u"
+            unzip -q /tmp/one.smod -d "$dir"
+            echo "fetched $dir"
+          done
+          ls -1 /tmp/mods
+
+      - name: Compile
+        run: |
+          set -euo pipefail
+          tag="${{ inputs.build_tag }}"
+          for d in /tmp/mods/*/; do
+            echo "=== $d"
+            "$LAUNCHER" native-build "$d" --version "$tag" --trust-native-code --json || echo "FAILED $d"
+          done
+
+      - name: Collect what came out
+        if: always()
+        run: |
+          set -euo pipefail
+          mkdir -p out
+          find "$HOME/.local/share/sunrise" -type f \( -name '*.smod' -o -name '*.so' \) -print | tee /tmp/found.txt || true
+          while read -r f; do
+            mkdir -p "out/$(dirname "${f#$HOME/.local/share/sunrise/}")"
+            cp -a "$f" "out/${f#$HOME/.local/share/sunrise/}"
+          done < /tmp/found.txt
+          if [ -d "$HOME/.local/share/sunrise/launcher/native" ]; then
+            cp -a "$HOME/.local/share/sunrise/launcher/native/build.log" out/ 2>/dev/null || true
+          fi
+          du -sh out || true
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: native-mods-${{ inputs.build_tag }}
+          path: out
+          if-no-files-found: warn
+          retention-days: 7
