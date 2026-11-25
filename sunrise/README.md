@@ -4,7 +4,13 @@
 和仓库里另外两条（`release-offline.yml` / `release-game.yml`，跟
 `horizon-rust/horizon`）互不影响：不共用脚本、不共用 state、不共用 release。
 
-**状态：单人 + 多人 + LAN 都通（靠「不经启动器、直连本体」绕过拦截，不需要任何补丁）。**
+**状态（2026-11-25 晚，真机实测 nightly-2026-11-20 · 9425651）：离线单人 + 离线 LAN 都通，
+不需要任何补丁，靠「不经启动器、直连本体」绕开启动器。跨设备联机、正版服务器、多人服务器未测。**
+
+直启有一个前提：`--resources` 不能指向**启动器登记过的缓存条目**，否则撞 cache lease 闸
+（见「直连的第三个坑」）。复制/自建出来的副本实测可直启；包版面是副本，按同一机制应当可用，
+但**没有单独跑过整包**。
+
 CI 上已经跑通到「启动器接管随包版本并选中它」，产物发在 Release `sunrise-offline`。
 
 ## 为什么要试这一条
@@ -33,8 +39,10 @@ Sunrise 是同一套代码改名搬过去的，而且**本体自带一个离线�
 | `world/integrated.rs` | `publish()`：「对局域网开放」按钮直接返回错误 |
 
 错误文案都是一句 `Offline developer session: single-player only.`
-连锁反应更麻烦：`lan/mod.rs` 的 `OnlineMode::lan()` 第一行是
-`crate::auth::current()?`，**没登录就生成不出 LAN 密钥对**。
+`lan/mod.rs` 的 `OnlineMode::lan()` 第一行是 `crate::auth::current()?`，看着像「没登录就开不了 LAN」——
+**但它不是**。`?` 在这里返回的是 `None`，语义是「没有在线模式，退回离线托管」，
+源码注释原文：`a LAN or friends world authenticates its guests when the host is signed in;
+an offline name hosts in offline mode`。2026-11-25 晚实测：无会话、`lan open` 照样监听，访客能进。
 
 所以「**带着这个 flag**，单人 + 多人 + LAN 都能用」做不到。但真正的结论在下一节：
 **只要不传这个 flag，就什么都不拦。**
@@ -107,6 +115,26 @@ resources: if sibling.join("sunrise-resources.json").exists() {
 代码侧一旦发现资源不在就停在门口，
 这个分支已实测（退出码 1 + 提示文案），资源存在时的三条路径也都实测过。
 
+### 直连的第三个坑：cache lease
+
+资源找对了还有一道闸（2026-11-25 实测撞到）。直接指向启动器版本目录时：
+
+> `Sunrise: cannot acquire launcher cache leases: …/launcher/versions/<tag>/.local/sunrise-client/26.3
+> is in the launcher's data folder but has no cache lease there; start the game with the launcher's Play
+> (sunrise-launcher play --instance <instance> --version <tag>), and update the launcher if it was
+> already started that way`
+
+退出码 78，143 ms 退出，连窗口都不开。租约是启动器 Play 时写在 `<launcher>/run-leases/` 的记录，
+文件名不是资源路径的 sha256（试过），也不打算伪造。
+
+判据比「路径在启动器数据目录里」细：**同一份资源换到自己建的目录**（哪怕
+`SUNRISE_LAUNCHER_HOME` 指过去）就能起，实测 `--frames 3 --test-terrain` 首帧 364 ms。
+它拒的是**启动器登记过的缓存条目**，复制/自建出来的副本不算。
+
+所以 `play-offline.sh` 的发现逻辑不用改——包里的资源天然是副本。但别为了省空间把它指向
+`~/.local/share/sunrise/launcher/versions/<tag>`，那样必撞。顺带纠正体积：资源整树是
+**693 MB**（顶层 44 项只有 94 MB，`assets/`、`classes/` 都在子目录里）。
+
 ## 那 `offline-account.patch` 呢
 留着，但**不是必需品**。它是「如果哪天必须走启动器 Play 按钮」时的备用路线：
 造一个离线 `AuthSession`、拆掉五处拦截。
@@ -135,11 +163,16 @@ resources: if sibling.join("sunrise-resources.json").exists() {
   `--resources`；自带 `--resources` 不重复；跨目录绝对路径调用正常
 - ✅ `offline-wrapper.sh` 参数过滤实测：带空格路径、单引号、`$`、空串都原样保留；
   有 flag 时滤掉、无 flag 时整串透传
-- ❌ **没有实机验证 LAN 能不能真进人。** 代码路径是通的，但「路径通」和「真能玩」
-  之间还有距离——尤其玩家列表、皮肤、聊天这些依赖账号属性的地方，离线访客的
-  properties 是空的。
-- ❌ **没有真本体跑过**（本机没有可用的真二进制 + 没有显示服务），
-  `--resources` 那一段是照源码反推 + 假二进制验 argv。
+- ✅ **真本体直启（2026-11-25 19:10）**：资源复制到启动器数据目录之外，`sunrise-client
+  --resources … --game-dir …` 起来，1.1 s 载入资源，Vulkan 首帧 1108 ms，离线身份自动生成
+  （`Player98590`），全程无账号
+- ✅ **离线 LAN 真进人（同日 19:15）**：`sunrise-ctl lan open 25566` → 监听 `0.0.0.0:25566`；
+  第二个实例 `--server 192.168.5.55:25566 --name Guest` 进世界，主机 `lan status` 有
+  Guest（loaded/placed），chat 有 `Guest joined the game`
+- ❌ **没测跨设备**：两次都是同一台机（经 LAN 地址走本机协议栈），另一台设备 + 防火墙放行未验
+- ❌ **离线访客的属性是空的**：皮肤是默认皮，聊天没有签名（离线模式本来不适用），
+  身份不验证——只适合可信局域网
+- ❌ 正版服务器、多人服务器（online-mode）仍未测，按源码判断需要会话，不是本链目标
 
 ## Horizon 与本链的差别
 
@@ -149,7 +182,8 @@ resources: if sibling.join("sunrise-resources.json").exists() {
 | 编译 | Rust 工具链 + 图形库，~90 min | 不编译，纯下载组装 |
 | 产物来源 | 上游源码 + 官方包 | 两个官方包，原样复制 |
 | 离线入口 | 启动器里点 Play | `PLAY-OFFLINE.sh` 直连本体 |
-| 离线完整性 | 单人 + 多人 + LAN | 单人 + 多人 + LAN |
+| 离线完整性 | 单人 + 多人 + LAN | 单人 + 离线 LAN 实测通过；跨设备、正版服未测 |
+| 直启前提 | 无（补丁在启动器侧） | 资源须在启动器登记缓存之外（见第三个坑） |
 
 ## 怎么跑
 
@@ -248,7 +282,9 @@ pub fn data_dir() -> PathBuf {
 - **`PLAY-OFFLINE.sh` 能起本体**：实测 `./play-offline.sh --launch-api` 正常返回。
 - **`offline-wrapper.sh` 参数保真**：带空格路径、单引号、`$`、空串全部原样透传。
 
-最后两条是这条链存在的意义，也是唯一不能靠读代码确认的。
+最后两条是这条链存在的意义。`PLAY-OFFLINE.sh` 那天只验到「`--launch-api` 能返回」，
+真正的「进世界 + 有人进来」是 2026-11-25 晚在本机（有显示器和 Vulkan）补的，
+见 `## 验证到哪一步了`。
 
 ## 踩过的两个坑（别再踩）
 
