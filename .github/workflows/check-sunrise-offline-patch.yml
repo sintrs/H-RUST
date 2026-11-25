@@ -1,0 +1,118 @@
+name: Check sunrise offline patch
+
+# Compile-only gate for sunrise/offline-account.patch. It does not build a
+# package and does not touch the sunrise-offline release: the question here is
+# one thing only -- does the patch still apply to upstream, and does the tree
+# still compile with it.
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: "Upstream branch, tag or commit to patch"
+        required: false
+        default: "main"
+  push:
+    paths:
+      - "sunrise/offline-account.patch"
+      - ".github/workflows/check-sunrise-offline-patch.yml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: h-rust-sunrise-offline-patch-check
+  cancel-in-progress: true
+
+jobs:
+  check:
+    # Upstream's ci.yml uses ubuntu-24.04; `latest` may drift to another release
+    # and start failing on a different libc or apt package name.
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    env:
+      UPSTREAM_REPO: sunrise-org/sunrise
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Show the patch
+        run: |
+          wc -l sunrise/offline-account.patch
+          head -40 sunrise/offline-account.patch
+
+      - name: Fetch upstream
+        env:
+          REF: ${{ inputs.ref || 'main' }}
+        run: |
+          set -euo pipefail
+          echo "ref=$REF" >> "$GITHUB_ENV"
+          # codeload takes a branch, a tag or a commit under the same path.
+          curl -fsSL --retry 3 -o upstream.tar.gz \
+            "https://codeload.github.com/${UPSTREAM_REPO}/tar.gz/${REF}"
+          mkdir -p src
+          tar -xzf upstream.tar.gz -C src --strip-components=1 --no-same-owner --touch
+          ls src | head
+
+      - name: Apply the patch
+        run: |
+          set -euo pipefail
+          cd src
+          if ! git apply --check ../sunrise/offline-account.patch; then
+            echo "::error::the patch no longer applies to upstream -- rebase sunrise/offline-account.patch"
+            exit 1
+          fi
+          git apply ../sunrise/offline-account.patch
+          echo "patch applied cleanly"
+
+      - name: Rust toolchain
+        run: |
+          set -euo pipefail
+          curl -fsSL --retry 3 https://sh.rustup.rs -o rustup.sh
+          sh rustup.sh -y --profile minimal --default-toolchain none
+          . "$HOME/.cargo/env"
+          # Upstream's ci.yml uses stable, not a pinned version.
+          rustup toolchain install stable --profile minimal
+          rustc +stable --version
+          cargo +stable --version
+
+      - name: Install the libraries upstream's CI installs
+        # Copied from upstream ci.yml: the client links ALSA and udev. Anything
+        # more is our guess at a build, and this gate is not a build.
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends libasound2-dev libudev-dev
+
+      - name: cargo check (the patched crate, all targets)
+        run: |
+          set -euo pipefail
+          . "$HOME/.cargo/env"
+          cd src
+          # --all-targets so the patch is checked against the test code too, which
+          # is where developer_launch.rs and launch_options.rs have their callers.
+          # `set -o pipefail` keeps cargo's own exit code through `tee`.
+          cargo +stable check -p sunrise-client --all-targets 2>&1 | tee /tmp/check.log | tail -100
+          ! grep -q '^error' /tmp/check.log
+
+      - name: Lint the patched crate as upstream does
+        if: always()
+        run: |
+          set -euo pipefail
+          . "$HOME/.cargo/env"
+          cd src
+          # Upstream: `clippy --workspace --all-targets -- -D warnings`. Scoped to
+          # the crate this patch touches, because warnings anywhere else are
+          # upstream's business. A warning introduced by the patch still fails.
+          cargo +stable clippy -p sunrise-client --all-targets -- -D warnings 2>&1 | tee /tmp/clippy.log | tail -100
+          ! grep -q '^error' /tmp/clippy.log
+
+      - name: Report
+        if: always()
+        env:
+          REF: ${{ inputs.ref || 'main' }}
+        run: |
+          {
+            echo "### sunrise offline patch check"
+            echo ""
+            echo "- upstream: \`${UPSTREAM_REPO}@${REF}\`"
+            echo "- patch: $(wc -l < sunrise/offline-account.patch) lines"
+            echo "- result: ${{ job.status }}"
+          } >> "$GITHUB_STEP_SUMMARY"

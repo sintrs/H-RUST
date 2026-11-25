@@ -1,0 +1,143 @@
+diff --git a/crates/sunrise-client/src/game/interface/developer_launch.rs b/crates/sunrise-client/src/game/interface/developer_launch.rs
+index f52ad86..53083be 100644
+--- a/crates/sunrise-client/src/game/interface/developer_launch.rs
++++ b/crates/sunrise-client/src/game/interface/developer_launch.rs
+@@ -5,16 +5,11 @@ use sunrise_client::lan::{NetConfig, hub::HubConfig};
+ 
+ impl Options {
+     pub(super) fn validate_developer_single_player(&self) -> Result<()> {
+-        if self.developer_single_player
+-            && (self.server.is_some()
+-                || self.session_stdin
+-                || self.session_file.is_some()
+-                || !self.execution_role.is_client())
+-        {
+-            return Err(
+-                sunrise_client::lang::get("sunrise.developer_offline.single_player").into(),
+-            );
+-        }
++        // OFFLINE-PATCH: was "developer single player refuses --server and every
++        // session file". An offline build is the only way to play without an
++        // account, so it must be allowed to reach multiplayer. Kept as a no-op so
++        // the call site and the upstream shape stay recognisable on rebase.
++        let _ = self;
+         Ok(())
+     }
+ }
+@@ -28,11 +23,11 @@ impl Game<'_> {
+         net: NetConfig,
+         config: HubConfig,
+     ) -> Result<()> {
+-        if self.options.developer_single_player && net.listen {
+-            return Err(
+-                sunrise_client::lang::get("sunrise.developer_offline.single_player").into(),
+-            );
+-        }
++        // OFFLINE-PATCH: upstream refused this with
++        // "Offline developer session: single-player only." An offline host is
++        // allowed to open its world to the LAN now. It authenticates nobody
++        // (NetConfig.online is an offline OnlineMode), which is exactly what a
++        // LAN world with an offline host is.
+         self.start_lan_hub(settings, net, config)
+     }
+     /// Join single player's integrated server through memory.
+@@ -53,11 +48,10 @@ impl Game<'_> {
+         realm: bool,
+         list_name: Option<&str>,
+     ) -> Result<()> {
+-        if local.is_none() && self.options.developer_single_player {
+-            return Err(
+-                sunrise_client::lang::get("sunrise.developer_offline.single_player").into(),
+-            );
+-        }
++        // OFFLINE-PATCH: upstream refused every remote server here. Offline
++        // joining is what the offline build is for; the Mojang session service is
++        // skipped for an offline account (the handshake goes out unsigned).
++        let _ = &local;
+         self.connect_remote_session(address, name, local, cookies, lan, realm, list_name)
+     }
+ }
+diff --git a/crates/sunrise-client/src/game/runtime/launch_options.rs b/crates/sunrise-client/src/game/runtime/launch_options.rs
+index 12bede6..f90e2ba 100644
+--- a/crates/sunrise-client/src/game/runtime/launch_options.rs
++++ b/crates/sunrise-client/src/game/runtime/launch_options.rs
+@@ -108,6 +108,11 @@ impl Options {
+         // The launcher's account: online-mode servers need it. A bad file
+         // only leaves the game offline.
+         let session = if o.developer_single_player {
++            // OFFLINE-PATCH: was `Ok(None)`, which left `auth::current()` empty so
++            // every account-keyed path (LAN hosting, guest verification, the
++            // multiplayer button) was dead. The offline account is installed
++            // below, once the game folder is the working directory and the
++            // offline name is readable from it.
+             Ok(None)
+         } else if o.session_stdin {
+             let mut text = String::new();
+@@ -144,6 +149,34 @@ impl Options {
+                 .and_then(|()| std::env::set_current_dir(&dir))
+                 .map_err(|e| format!("game folder {}: {e}", dir.display()))?;
+         }
++        // OFFLINE-PATCH: install the offline account now that the game folder is
++        // the working directory, so the name comes from (and is kept in) the
++        // player's own `sunrise-player.txt`. `--name` / SUNRISE_PLAYER_NAME still
++        // win, and the UUID is Java's `OfflinePlayer:<name>` one, so the same name
++        // is the same identity across runs and across saves.
++        //
++        // It is a real `AuthSession` with a placeholder token: that token is only
++        // ever handed to the Mojang session service when joining an online-mode
++        // server, which an offline client cannot be authenticated for. It is
++        // never written anywhere (see `AuthSession`'s Debug, and load/parse are
++        // the only readers).
++        if o.developer_single_player {
++            let name = o.player_name();
++            let uuid = sunrise_core::md5::offline_uuid(&name);
++            sunrise_client::auth::set_current(sunrise_client::auth::AuthSession::new(
++                &name,
++                uuid,
++                "offline",
++            ));
++            // No profile key pair: `getCertificates` is a Microsoft service call
++            // there is no account for, and the chat-session path only asks for
++            // keys when the server is in online mode (remote_chat.rs), which an
++            // offline world and an offline LAN are not.
++            //
++            // The title-screen toast is left to the launcher's own
++            // SUNRISE_OFFLINE_REASON (as before this patch): an offline build is
++            // the normal way to play here, so it need not announce itself.
++        }
+         // Vanilla's quick play (Main, QuickPlay.joinSingleplayerWorld): only a
+         // world that exists opens; else the title screen. --world also creates one.
+         if let Some(world) = o.quick_play.take() {
+diff --git a/crates/sunrise-client/src/game/world/integrated.rs b/crates/sunrise-client/src/game/world/integrated.rs
+index 68da0ea..c5c0261 100644
+--- a/crates/sunrise-client/src/game/world/integrated.rs
++++ b/crates/sunrise-client/src/game/world/integrated.rs
+@@ -1239,9 +1239,9 @@ impl Game<'_> {
+     /// port fails here; the hub starts listening once it is at hand.
+     pub(super) fn publish(&mut self, settings: LanSettings) -> std::result::Result<u16, String> {
+         if self.options.developer_single_player {
+-            return Err(sunrise_client::lang::get(
+-                "sunrise.developer_offline.single_player",
+-            ));
++            // OFFLINE-PATCH: was "an offline session may not publish". Offline LAN
++            // hosting is a supported mode now; the hub simply runs in offline
++            // online-mode (no session service to verify guests with).
+         }
+         let Some(s) = self.serving.as_mut() else {
+             return Err("not an integrated server".into());
+diff --git a/crates/sunrise-client/src/lan/mod.rs b/crates/sunrise-client/src/lan/mod.rs
+index cbbaba1..946c169 100644
+--- a/crates/sunrise-client/src/lan/mod.rs
++++ b/crates/sunrise-client/src/lan/mod.rs
+@@ -211,7 +211,10 @@ impl OnlineMode {
+     /// friends world authenticates its guests when the host is signed in;
+     /// an offline name hosts in offline mode.
+     pub fn lan() -> Option<Arc<Self>> {
+-        crate::auth::current()?;
++        // OFFLINE-PATCH: was `crate::auth::current()?`, which dropped an offline
++        // host to no online mode at all. A LAN world only needs the key pair the
++        // hello carries; an offline host verifies nobody, as the comment above
++        // already says ("an offline name hosts in offline mode").
+         Self::generate(false)
+             .map_err(|e| log::warn!("LAN stays in offline mode: {e}"))
+             .ok()
