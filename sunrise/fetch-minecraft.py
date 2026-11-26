@@ -99,12 +99,14 @@ def main():
         path = (lib.get("downloads") or {}).get("artifact", {}).get("path")
         if not path or name.count(":") < 2:
             continue
-        _group, artifact, version = name.split(":")[:3]
+        _group, _artifact, version = name.split(":")[:3]
         if "-mojang-" not in version:
             continue
         base = version.split("-mojang-")[0]
         parts = path.split("/")
-        rel = "/".join(parts[:-2] + [base, f"{artifact}-{base}.jar"])
+        # 用原文件名替换版本段，而不是拿 artifact 名硬拼：natives 条目的文件名是
+        # lwjgl-freetype-<ver>-natives-linux.jar，硬拼会把 -natives-linux 丢掉。
+        rel = "/".join(parts[:-2] + [base, parts[-1].replace(version, base)])
         target = root / "libraries" / rel
         if target.exists():
             continue
