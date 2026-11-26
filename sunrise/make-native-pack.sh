@@ -172,6 +172,22 @@ for exe in sunrise-client sunrise-ctl sunrise-prepare sunrise-server sunrise-per
 done
 [[ -x "$VERSIONS/sunrise-client" ]] || { echo "错误：版本目录里没有可执行的 sunrise-client" >&2; exit 1; }
 
+# 再补一份以 base 命名的版本目录。
+# 文档原话：「Client builds share their base version's prepared resources」。启动器
+# 认标签用的是版本目录里 sunrise-release.json 的 build 字段，也就是 base 名，于是
+# prepare 要写 versions/<base>/.local/，目录不在就直接死在
+# 「.preparing.lock: No such file or directory」—— 资源一根都没导出来。
+# 内容全部硬链接到上面那份，tar 只多存硬链接条目，包不会变大。
+if [[ "$BASE" != "$TAG" ]]; then
+    BASE_DIR_PKG="$LAUNCHER_HOME/versions/$BASE"
+    if [[ -e "$BASE_DIR_PKG" ]]; then
+        echo "错误：包里已经有 $BASE 了，不该出现两个" >&2; exit 1
+    fi
+    mkdir -p "$BASE_DIR_PKG"
+    (cd "$VERSIONS" && find . -mindepth 1 -maxdepth 1 -exec cp -al {} "$BASE_DIR_PKG/" \;)
+    echo "    另存为 $BASE（硬链接，不额外占空间）"
+fi
+
 cat > "$ROOT/run-offline.sh" <<'LAUNCH'
 #!/bin/sh
 # Start the Sunrise launcher with this folder as its data folder.
@@ -220,6 +236,8 @@ done
 here=\$(cd "\$(dirname "\$self")" && pwd)
 
 GAME="\$here/data/versions/${TAG}"
+BASE_DIR="\$here/data/versions/${BASE}"
+MIRROR="\$here/resources"
 CLIENT="\$GAME/sunrise-client"
 if [ ! -x "\$CLIENT" ]; then
   echo "PLAY-OFFLINE.sh: \$CLIENT is missing" >&2
@@ -230,10 +248,14 @@ fi
 SUNRISE_HOME="\$here/data"
 export SUNRISE_HOME
 
+# The game files can be next to the native build, next to the base build it was
+# compiled for (client native builds share the base's prepared resources), or
+# already mirrored into ./resources.
 MANIFEST=
 for candidate in \\
+  "\$MIRROR"/*/sunrise-resources.json \\
   "\$GAME/.local/sunrise-client"/*/sunrise-resources.json \\
-  "\$GAME/resources/sunrise-resources.json"
+  "\$BASE_DIR/.local/sunrise-client"/*/sunrise-resources.json
 do
   if [ -f "\$candidate" ]; then
     MANIFEST=\$candidate
@@ -250,13 +272,33 @@ launcher. Run this once and let it finish:
 
     ./run-offline.sh prepare
 
-(the build is already selected; add --version ${TAG} to name it)
+The first run also takes the 26.3 version file and server jar from Mojang (about
+250 MB), so it needs a network connection once.
 
 Then run ./PLAY-OFFLINE.sh again.
 MISSING
   exit 1
 fi
 RESOURCES=\$(dirname "\$MANIFEST")
+
+# Anything under ./data belongs to the launcher, and the client refuses to read
+# game files from there without a cache lease:
+#   "cannot acquire launcher cache leases: ... is in the launcher's data folder"
+# Mirror it next door once, with hard links so it costs no disk, and play from
+# that copy. Another filesystem falls back to a real copy.
+case \$RESOURCES in
+"\$here"/data/*)
+  mc=\$(basename "\$RESOURCES")
+  target="\$MIRROR/\$mc"
+  if [ ! -f "\$target/sunrise-resources.json" ]; then
+    echo "PLAY-OFFLINE.sh: mirroring the game files into ./resources/\$mc (once, no extra space)" >&2
+    mkdir -p "\$MIRROR"
+    rm -rf "\$target"
+    cp -al "\$RESOURCES" "\$target" 2>/dev/null || cp -a "\$RESOURCES" "\$target"
+  fi
+  RESOURCES=\$target
+  ;;
+esac
 
 given=0
 for arg in "\$@"; do
@@ -306,6 +348,10 @@ lines += [
     "",
     "    ./run-offline.sh prepare",
     "",
+    "That first run also takes the 26.3 version file and server jar from Mojang",
+    "(about 250 MB), so it needs a network connection once. Everything after that",
+    "works offline.",
+    "",
     "Then, to play offline (single player, LAN, private offline-mode servers):",
     "",
     "    ./PLAY-OFFLINE.sh",
@@ -336,7 +382,9 @@ Version:  ${TAG}
 Base:     ${BASE}
 Mods:     ${MODS_LABEL}
 
-First run, once:   ./run-offline.sh prepare     (needs Minecraft 26.3 of your own)
+First run, once:   ./run-offline.sh prepare
+                   needs Minecraft 26.3 of your own, plus about 250 MB taken
+                   from Mojang, so it has to be online that once
 Then to play:      ./PLAY-OFFLINE.sh
 
 See BUILD-INFO.txt for the build identity and the mod list.
