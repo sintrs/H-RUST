@@ -43,6 +43,7 @@ Horizon 那三条 workflow 都读上游 nightly，与 `state/*.json` 比对，�
 | `native-mod.yml` | `native-mod` | `horizon-linux-x86_64-native-offline-<日期>-<时分>.tar.gz` — 启动器 + 带小地图的版本目录，解压即玩，约 130 MB |
 | `release-sunrise-offline.yml` | `sunrise-offline` | `sunrise-linux-x86_64-offline-<日期>-<时分>.tar.gz` — Sunrise 启动器 + 官方本体，不编译不补丁 |
 | `release-sunrise-native-pack.yml` | `sunrise-native` | `<build>-<N>mods-<日期>-<时分>.tar.gz` — 编好的 native mod 版本，约 130 MB |
+| `watch-sunrise-native.yml` | （不发版） | 每天北京时间 11:17 看一眼：四个 mod 能在同一个 build 上凑齐、且 Release 里还没有，就触发上一条；凑不齐就安静退出 |
 
 game 的附件名就是上游那个版本，比如 `horizon-linux-x86_64-nightly-2026-11-20-0a875da.tar.gz`；
 offline 的带构建时刻（北京时间），比如 `horizon-linux-x86_64-offline-2026-11-21-1643.tar.gz`。
@@ -115,11 +116,14 @@ runner 上还要 ALSA 与 libudev 的 `-dev` 头文件（编 wgpu/winits 用）�
 约 130 MB：`sunrise-client` + 十二个 `.so` + SDK 库，资源由使用者 `./run-offline.sh prepare` 从
 自己的 Minecraft 生成。
 
-六个不显然的地方：
+七个不显然的地方：
 
 - **runner 必须 `ubuntu-22.04`**。launcher 二进制最高要 `GLIBC_2.35`，22.04 正好是。24.04 是
   2.39，`frontier` 里的 `atan2f` 会被绑到 `GLIBC_2.43`，包拿到老发行版上直接起不来。
   `make-native-pack.sh` 把 2.35 做成闸门，超了不发包。
+- **`launcher_tag` 留空就取最新**，查的是 `sunrise-org/sunrise` 的 `launcher@X.Y.Z`（真去下载的
+  那个仓库），不查 `sunrise-org/sunrise-launcher` 的 `vX.Y.Z` —— 两套 tag、两个仓库、同步有先后，
+  混着传会拼出 404 的 URL。实际用到的版本写在包内 `BUILD-INFO.txt` 的 `Launcher:` 行里。
 - **mod 按 `slug@version` 取，不按 slug**。`mods install <slug>` 拿的是最新 release，而 native mod
   只在自己 pin 的那个 build 上能用。`fetch-sunrise-mods.py` 读注册表索引，钉版本、校验 sha256、
   解开成源码目录。
