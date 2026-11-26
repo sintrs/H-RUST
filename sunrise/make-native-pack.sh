@@ -18,6 +18,8 @@
 #
 # 环境变量:
 #   MAX_GLIBC   允许的最高 glibc（默认 2.35，给 0 关闭检查）
+#   LAUNCHER_VERSION  启动器自报的版本（`sunrise-launcher --version` 的整行），写进包内说明；
+#               不传就写 (not recorded) —— 二进制 stripped，事后没别的途径查
 #   MODS_LABEL  包内 BUILD-INFO.txt / PLAY-OFFLINE.txt 里的 mod 短标签（默认从 native-mods.json 拼）
 #   MODS_BRIEF  附件名里的 mod 摘要，默认 `4mods`（逐个拼名会让附件名过百字符）
 #   STAMP       附件名里的时间戳（默认北京时间）
@@ -324,9 +326,9 @@ ln -sf play-offline.sh "$ROOT/PLAY-OFFLINE.sh"
 install -m 755 "$(dirname "${BASH_SOURCE[0]}")/offline-wrapper.sh" "$ROOT/offline-wrapper.sh"
 
 echo "==> 写 BUILD-INFO"
-python3 - "$MANIFEST" "$ROOT/BUILD-INFO.txt" "$TAG" "$BASE" "$MODS_LABEL" <<'PY'
+python3 - "$MANIFEST" "$ROOT/BUILD-INFO.txt" "$TAG" "$BASE" "$MODS_LABEL" "${LAUNCHER_VERSION:-}" <<'PY'
 import json, sys, datetime
-manifest, out, tag, base, label = sys.argv[1:6]
+manifest, out, tag, base, label, launcher = sys.argv[1:7]
 d = json.load(open(manifest))
 lines = [
     "Sunrise native mod pack (Linux x86_64)",
@@ -335,6 +337,7 @@ lines = [
     f"Version:    {tag}",
     f"Base build: {base}",
     f"Sunrise:    {d.get('sunrise')}",
+    f"Launcher:   {launcher or '(not recorded)'}",
     f"Mixins:     {d.get('horizon_mixins')}",
     f"Rust:       {d.get('rust')}   profile: {d.get('profile')}   route: {d.get('route')}",
     "",
@@ -388,6 +391,7 @@ Sunrise native mod pack (Linux x86_64)
 
 Version:  ${TAG}
 Base:     ${BASE}
+Launcher: ${LAUNCHER_VERSION:-unknown}
 Mods:     ${MODS_LABEL}
 
 First run, once:   ./run-offline.sh prepare
