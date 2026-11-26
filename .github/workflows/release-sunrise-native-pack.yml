@@ -248,16 +248,19 @@ jobs:
           for a in "${assets[@]}"; do
             echo "── $(basename "$a")  $(du -h "$a" | cut -f1)"
             listing=$(tar -tzf "$a")
-            echo "$listing" | grep -qE '^\./data/versions/[^/]+/\.installed$' \
+            # 这里必须用 here-string，不能用 `echo | grep -q`：pipefail 下 grep -q 一
+            # 命中就关管道，echo 收到 SIGPIPE，整条管道返回 141，明明有也会判成没有。
+            # 头一次就栽在这 —— 报「缺 .installed」，实际包里好好的。
+            grep -qE '^\./data/versions/[^/]+/\.installed$' <<< "$listing" \
               && echo "   .installed 在" || echo "::error::缺 .installed"
-            echo "$listing" | grep -qE '^\./data/versions/[^/]+/native-mods\.json$' \
+            grep -qE '^\./data/versions/[^/]+/native-mods\.json$' <<< "$listing" \
               && echo "   native-mods.json 在" || echo "::error::缺 native-mods.json"
-            echo "$listing" | grep -qE '^\./PLAY-OFFLINE\.sh$' \
+            grep -qE '^\./PLAY-OFFLINE\.sh$' <<< "$listing" \
               && echo "   PLAY-OFFLINE.sh 在" || echo "::error::缺 PLAY-OFFLINE.sh"
-            if echo "$listing" | grep -q 'sunrise-data\.bin'; then
+            if grep -q 'sunrise-data\.bin' <<< "$listing"; then
               echo "::warning::包里带上了 sunrise-data.bin（运行时缓存，不该进包）"
             fi
-            tar -xzOf "$a" ./BUILD-INFO.txt 2>/dev/null | head -20 | sed 's/^/   /'
+            tar -xzOf "$a" ./BUILD-INFO.txt 2>/dev/null | head -20 | sed 's/^/   /' || true
           done
 
       - name: Publish to the rolling release
