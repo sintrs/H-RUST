@@ -9,8 +9,15 @@
 #   包拿到老发行版上直接起不来 —— 这条是实测出来的，不是猜的。
 #
 # 为什么一个 job 里循环 build 而不是用 matrix：
-#   Minecraft 26.3 的完整安装有 1.2 GB / 2 万多个文件，matrix 每个 job 都要拉一遍。
+#   真要下载 Minecraft 时它有 1.2 GB / 2 万多个文件，matrix 每个 job 都要拉一遍。
 #   同一个 runner 里循环，只拉一次。
+#
+# 为什么默认不下载 Minecraft（game_files=none）：
+#   native-build 只读 SDK 的 rmeta 和 mod 源码，一个字节都不读游戏资源；它唯一要的
+#   是版本处于「prepared」状态。而那个判定只看 .local/sunrise-client/<mc>/
+#   sunrise-prepare.json 里的 output_version（26 字节）。写对就过，于是 CI 能省掉
+#   1.2 GB 的 Minecraft 下载和 694 MB 的 prepare 产物。产物包本来就不含资源，
+#   所以两种模式打出来的包内容一致 —— 需要逐字节核对时把 game_files 设成 real。
 #
 # 为什么不用 `mods install` 而是按版本下载 .smod：
 #   `mods install <slug>` 取的是最新 release，而 native mod 只在编译时 pin 的那个
@@ -36,6 +43,13 @@ on:
         description: '启动器 release tag（native-build 是它的子命令）'
         type: string
         default: 'launcher@1.3.4'
+      game_files:
+        description: '游戏文件：none = 不下载，只写 prepared 标记（省 1.9 GB）；real = 真下载 Minecraft 并 prepare'
+        type: choice
+        options:
+          - none
+          - real
+        default: none
       publish:
         description: '发到滚动 Release sunrise-native'
         type: boolean
@@ -92,16 +106,16 @@ jobs:
           ldd "$found" | grep 'not found' || true
           "$found" --version
 
-      # 1.2 GB，缓存命中能省掉几分钟和几万次请求。
+      # 只有 game_files=real 才需要 Minecraft：1.2 GB，缓存命中能省掉几分钟和几万次请求。
       - name: Cache the Minecraft install
-        if: ${{ !inputs.dry_run }}
+        if: ${{ !inputs.dry_run && inputs.game_files == 'real' }}
         uses: actions/cache@v4
         with:
           path: ~/.minecraft
           key: minecraft-${{ inputs.minecraft }}-v1
 
       - name: Fetch Minecraft ${{ inputs.minecraft }} from Mojang
-        if: ${{ !inputs.dry_run }}
+        if: ${{ !inputs.dry_run && inputs.game_files == 'real' }}
         run: |
           set -euo pipefail
           python3 sunrise/fetch-minecraft.py --version "${{ inputs.minecraft }}" --root "$HOME/.minecraft"
@@ -129,11 +143,43 @@ jobs:
         env:
           BUILDS: ${{ inputs.builds }}
           MC: ${{ inputs.minecraft }}
+          GAME_FILES: ${{ inputs.game_files }}
         run: |
           set -uo pipefail
           VERSIONS="$HOME/.local/share/sunrise/launcher/versions"
           mkdir -p package "$VERSIONS"
           failed=()
+
+          # native-build 判断「已 prepared」只看版本目录里那个 26 字节的标记文件，
+          # 判定内容就是 output_version。版本号从这一版自己的 sunrise-prepare --check
+          # 里问出来 —— 11-24 要 8、11-25 要 9，每版都不同，不能硬编码。
+          # 必须精确匹配 "made by output version"，否则会先抓到 "prepared for
+          # Minecraft unknown, this build needs 26.3" 里的 26。
+          ask_output_version() {
+            local tag=$1 res=$2
+            "$VERSIONS/$tag/sunrise-prepare" --check --root "$VERSIONS/$tag" --output "$res" 2>&1 \
+              | sed -n 's/.*made by output version [0-9][0-9]*, this build needs \([0-9][0-9]*\).*/\1/p' \
+              | head -1
+          }
+
+          mark_prepared() {
+            local tag=$1 res need
+            res="$VERSIONS/$tag/.local/sunrise-client/$MC"
+            mkdir -p "$res"
+            # 只有标记文件时 --check 只说 "is not prepared"，不报版本号；补一份只带
+            # minecraft 的空清单才会说 "this build needs N"。不写 schema：那个值会
+            # 随 prepare 改版，写死反而变成新的过期源。
+            printf '{"minecraft":"%s"}\n' "$MC" > "$res/sunrise-resources.json"
+            printf '{"output_version":0}\n' > "$res/sunrise-prepare.json"
+            need=$(ask_output_version "$tag" "$res")
+            if [[ -z "$need" ]]; then
+              echo "::error::问不出 $tag 需要的 output_version"
+              "$VERSIONS/$tag/sunrise-prepare" --check --root "$VERSIONS/$tag" --output "$res" 2>&1 | head -8
+              return 1
+            fi
+            printf '{"output_version":%s}\n' "$need" > "$res/sunrise-prepare.json"
+            echo "prepared 标记：output_version=$need（未下载游戏文件）"
+          }
 
           mapfile -t list < <(printf '%s' "${BUILDS//,/ }" | xargs -n1 2>/dev/null)
           if ((${#list[@]} == 0)); then
@@ -145,9 +191,13 @@ jobs:
             if ! "$LAUNCHER" install "$tag" --json; then
               echo "::error::install 失败：$tag"; failed+=("$tag"); continue
             fi
-            # prepare 每个 build 一次：它把资源写进版本目录自己的 .local/ 下。
-            if ! "$LAUNCHER" prepare --version "$tag" --minecraft "$HOME/.minecraft" --json; then
-              echo "::error::prepare 失败：$tag"; failed+=("$tag"); continue
+            if [[ "$GAME_FILES" = real ]]; then
+              # prepare 每个 build 一次：它把资源写进版本目录自己的 .local/ 下。
+              if ! "$LAUNCHER" prepare --version "$tag" --minecraft "$HOME/.minecraft" --json; then
+                echo "::error::prepare 失败：$tag"; failed+=("$tag"); continue
+              fi
+            elif ! mark_prepared "$tag"; then
+              echo "::error::写不了 prepared 标记：$tag"; failed+=("$tag"); continue
             fi
             if ! "$LAUNCHER" switch "$tag" --json; then
               echo "::error::switch 失败：$tag"; failed+=("$tag"); continue
