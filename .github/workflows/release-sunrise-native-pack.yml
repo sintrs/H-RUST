@@ -1,0 +1,236 @@
+# 用官方启动器在 CI 里编译 Sunrise native mod，打成离线包，发到滚动 Release。
+#
+# 和 build-sunrise-native-mod.yml 的关系：那个是探针（只收集 .so，验证环境够不够），
+# 这个是要发货的正式链。核心流程一样，区别是补全了打包、glibc 闸门和发布。
+#
+# 为什么跑在 ubuntu-22.04 而不是默认的 24.04：
+#   launcher 二进制最高要 GLIBC_2.35，22.04 正好是 2.35；编出来的 .so 也链 2.35，
+#   和官方本体一致。24.04 是 2.39，frontier 里的 atan2f 会被绑到更高版本节点，
+#   包拿到老发行版上直接起不来 —— 这条是实测出来的，不是猜的。
+#
+# 为什么一个 job 里循环 build 而不是用 matrix：
+#   Minecraft 26.3 的完整安装有 1.2 GB / 2 万多个文件，matrix 每个 job 都要拉一遍。
+#   同一个 runner 里循环，只拉一次。
+#
+# 为什么不用 `mods install` 而是按版本下载 .smod：
+#   `mods install <slug>` 取的是最新 release，而 native mod 只在编译时 pin 的那个
+#   build 上能用。要复现一个已知组合就得钉住 slug@version，见 fetch-sunrise-mods.py。
+name: Build a Sunrise native mod pack
+
+on:
+  workflow_dispatch:
+    inputs:
+      builds:
+        description: '要编的 build tag，空格或逗号分隔（每个都会单独出一个包）'
+        type: string
+        default: 'dev-2026-11-24-3d34bbe'
+      mods:
+        description: 'mod 列表，slug@version，空格分隔；顺序无关，依赖会自动编进去'
+        type: string
+        default: 'frontier@1.0.3 supercam@1.0.2 dynamic-fps@0.5.1 wayfarer-stones@0.9.2'
+      minecraft:
+        description: '这些 build 对应的 Minecraft 版本'
+        type: string
+        default: '26.3'
+      launcher_tag:
+        description: '启动器 release tag（native-build 是它的子命令）'
+        type: string
+        default: 'launcher@1.3.4'
+      publish:
+        description: '发到滚动 Release sunrise-native'
+        type: boolean
+        default: false
+      dry_run:
+        description: '只查注册表和版本，不下载不编译'
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+
+concurrency:
+  group: h-rust-sunrise-native-pack
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: Compile and pack
+    runs-on: ubuntu-22.04
+    timeout-minutes: 150
+    env:
+      GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+
+      # launcher 是 eframe 程序，哪怕只跑 CLI 子命令也要 X11/Wayland 的符号；
+      # 编译侧还要 -lasound -ludev，所以 dev 包一起装。
+      # 注意 22.04 的包名是 libasound2，24.04 才叫 libasound2t64。
+      - name: Install the libraries the launcher and the compiler need
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq --no-install-recommends \
+            build-essential pkg-config binutils \
+            libasound2-dev libudev-dev \
+            libxkbcommon-x11-0 libxkbcommon0 libwayland-client0 libx11-xcb1 \
+            libxcb1 libxcb-icccm4 libxcb-image0 libxcb-keysyms1 libxcb-randr0 \
+            libxcb-render0 libxcb-render-util0 libxcb-shape0 libxcb-xkb1 \
+            libxcb-xinerama0 libgl1 libglx0 libegl1 libvulkan1 \
+            libfontconfig1 libfreetype6 libdbus-1-3 libasound2 libudev1
+
+      - name: Unpack the official launcher
+        run: |
+          set -euo pipefail
+          url="https://github.com/sunrise-org/sunrise/releases/download/${{ inputs.launcher_tag }}/sunrise-launcher-linux-x86_64.tar.gz"
+          curl -fsSL --retry 3 -o "$RUNNER_TEMP/launcher.tar.gz" "$url"
+          mkdir -p "$RUNNER_TEMP/lx"
+          tar -xzf "$RUNNER_TEMP/launcher.tar.gz" -C "$RUNNER_TEMP/lx"
+          found=$(find "$RUNNER_TEMP/lx" -name 'sunrise-launcher' -type f | head -1)
+          chmod +x "$found"
+          echo "LAUNCHER_TGZ=$RUNNER_TEMP/launcher.tar.gz" >> "$GITHUB_ENV"
+          echo "LAUNCHER=$found" >> "$GITHUB_ENV"
+          ldd "$found" | grep 'not found' || true
+          "$found" --version
+
+      # 1.2 GB，缓存命中能省掉几分钟和几万次请求。
+      - name: Cache the Minecraft install
+        if: ${{ !inputs.dry_run }}
+        uses: actions/cache@v4
+        with:
+          path: ~/.minecraft
+          key: minecraft-${{ inputs.minecraft }}-v1
+
+      - name: Fetch Minecraft ${{ inputs.minecraft }} from Mojang
+        if: ${{ !inputs.dry_run }}
+        run: |
+          set -euo pipefail
+          python3 sunrise/fetch-minecraft.py --version "${{ inputs.minecraft }}" --root "$HOME/.minecraft"
+
+      - name: Fetch the mod sources at the pinned versions
+        if: ${{ !inputs.dry_run }}
+        env:
+          MODS: ${{ inputs.mods }}
+          BUILDS: ${{ inputs.builds }}
+        run: |
+          set -euo pipefail
+          read -ra specs <<< "$(printf '%s' "$MODS" | tr ',' ' ')"
+          python3 sunrise/fetch-sunrise-mods.py \
+            --out "$RUNNER_TEMP/mods-src" \
+            --manifest "$RUNNER_TEMP/mods-manifest.json" \
+            --builds "$BUILDS" \
+            "${specs[@]}"
+          ls -1 "$RUNNER_TEMP/mods-src"
+
+      - name: Compile and pack every requested build
+        if: ${{ !inputs.dry_run }}
+        # 单个 build 编译 + prepare 在本机是 53 s + 几十秒；CI 慢一些。给足余量，
+        # 但别让一个卡住的 native-build 吃掉整个 job 的 150 分钟。
+        timeout-minutes: 60
+        env:
+          BUILDS: ${{ inputs.builds }}
+          MC: ${{ inputs.minecraft }}
+        run: |
+          set -uo pipefail
+          VERSIONS="$HOME/.local/share/sunrise/launcher/versions"
+          mkdir -p package "$VERSIONS"
+          failed=()
+
+          mapfile -t list < <(printf '%s' "${BUILDS//,/ }" | xargs -n1 2>/dev/null)
+          if ((${#list[@]} == 0)); then
+            echo "::error::没有给 build（inputs.builds 是空的）"; exit 1
+          fi
+          echo "要编 ${#list[@]} 个 build：${list[*]}"
+          for tag in "${list[@]}"; do
+            echo "════════ $tag ════════"
+            if ! "$LAUNCHER" install "$tag" --json; then
+              echo "::error::install 失败：$tag"; failed+=("$tag"); continue
+            fi
+            # prepare 每个 build 一次：它把资源写进版本目录自己的 .local/ 下。
+            if ! "$LAUNCHER" prepare --version "$tag" --minecraft "$HOME/.minecraft" --json; then
+              echo "::error::prepare 失败：$tag"; failed+=("$tag"); continue
+            fi
+            if ! "$LAUNCHER" switch "$tag" --json; then
+              echo "::error::switch 失败：$tag"; failed+=("$tag"); continue
+            fi
+            "$LAUNCHER" rust install
+            "$LAUNCHER" rust status || true
+
+            before=$(ls -1 "$VERSIONS" | sort)
+            if ! "$LAUNCHER" native-build "$RUNNER_TEMP/mods-src" \
+                   --version "$tag" --trust-native-code --json; then
+              echo "::error::native-build 失败：$tag（mod 的 mixin 目标可能不在这个 build 里）"
+              failed+=("$tag"); continue
+            fi
+            after=$(ls -1 "$VERSIONS" | sort)
+
+            native=$(comm -13 <(echo "$before") <(echo "$after") | grep '^native-' | head -1 || true)
+            if [[ -z "$native" ]]; then
+              # 同名产物已存在时目录不会"新增"，按 base 短码兜底。
+              short=${tag##*-}
+              native=$(ls -1d "$VERSIONS"/native-"$short"-* 2>/dev/null | head -1 || true)
+              [[ -n "$native" ]] && native=$(basename "$native")
+            fi
+            if [[ -z "$native" ]]; then
+              echo "::error::$tag 编完了但找不到 native-* 产物目录"; failed+=("$tag"); continue
+            fi
+            echo "产物：$native"
+
+            # 默认 MAX_GLIBC=2.35：任何一个 .so 超过就红，不发坏包。
+            if ! bash sunrise/make-native-pack.sh "$VERSIONS/$native" "$LAUNCHER_TGZ" package; then
+              echo "::error::打包失败：$tag"; failed+=("$tag"); continue
+            fi
+          done
+
+          echo
+          echo "=== 产物 ==="; ls -lh package/ || true
+          if ((${#failed[@]})); then
+            echo "::error::以下 build 没成功：${failed[*]}"
+            exit 1
+          fi
+
+      - name: Check what the packages contain
+        if: ${{ !inputs.dry_run && always() }}
+        run: |
+          set -uo pipefail
+          shopt -s nullglob
+          assets=(package/*.tar.gz)
+          if ((${#assets[@]} == 0)); then echo "没有产物可查"; exit 0; fi
+          for a in "${assets[@]}"; do
+            echo "── $(basename "$a")  $(du -h "$a" | cut -f1)"
+            listing=$(tar -tzf "$a")
+            echo "$listing" | grep -qE '^\./data/versions/[^/]+/\.installed$' \
+              && echo "   .installed 在" || echo "::error::缺 .installed"
+            echo "$listing" | grep -qE '^\./data/versions/[^/]+/native-mods\.json$' \
+              && echo "   native-mods.json 在" || echo "::error::缺 native-mods.json"
+            echo "$listing" | grep -qE '^\./PLAY-OFFLINE\.sh$' \
+              && echo "   PLAY-OFFLINE.sh 在" || echo "::error::缺 PLAY-OFFLINE.sh"
+            if echo "$listing" | grep -q 'sunrise-data\.bin'; then
+              echo "::warning::包里带上了 sunrise-data.bin（运行时缓存，不该进包）"
+            fi
+            tar -xzOf "$a" ./BUILD-INFO.txt 2>/dev/null | head -20 | sed 's/^/   /'
+          done
+
+      - name: Publish to the rolling release
+        if: ${{ !inputs.dry_run && inputs.publish && success() }}
+        run: |
+          set -euo pipefail
+          TAG=sunrise-native
+          NAME="Sunrise native mod pack (Linux x86_64)"
+          NOTE="Compiled in GitHub Actions (ubuntu-22.04, glibc 2.35) by the official launcher's own native-build. Every library is checked against native-mods.json and against a GLIBC_2.35 ceiling before it ships. Game files are not included: run ./run-offline.sh prepare once to build them from your own Minecraft."
+          if ! gh release view "$TAG" >/dev/null 2>&1; then
+            gh release create "$TAG" --title "$NAME" --notes "$NOTE" --latest=false --prerelease
+          fi
+          shopt -s nullglob
+          for a in package/*.tar.gz; do
+            gh release upload "$TAG" "$a" --clobber
+          done
+          gh release edit "$TAG" --notes "$NOTE" --title "$NAME"
+
+      - name: Keep the packages as a run artifact
+        if: ${{ !inputs.dry_run }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: sunrise-native-packs
+          path: package/
+          retention-days: 7
+          if-no-files-found: warn

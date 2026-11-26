@@ -33,14 +33,16 @@ tar -xzf horizon-linux-x86_64-offline-*.tar.gz
 
 ## 发
 
-三条 workflow，都读上游 nightly，与 `state/*.json` 比对，没变化就跳过。产物发到**滚动 Release**：
-每个 workflow 一个固定 tag，每次构建覆盖附件，所以仓库里始终只有三个 Release。
+Horizon 那三条 workflow 都读上游 nightly，与 `state/*.json` 比对，没变化就跳过。产物发到**滚动 Release**：
+每个 workflow 一个固定 tag，每次构建覆盖附件。两条 Sunrise 链另算，见下一节。
 
 | Workflow | Release tag | 附件 |
 |---|---|---|
 | `release-offline.yml` | `nightly-offline` | `horizon-linux-x86_64-offline-<日期>-<时分>.tar.gz` — 启动器 + 本体，一个包自足 |
 | `release-game.yml` | `nightly-game` | `horizon-linux-x86_64-<版本 tag>.tar.gz` — 上游 nightly 包原样转发 |
 | `native-mod.yml` | `native-mod` | `horizon-linux-x86_64-native-offline-<日期>-<时分>.tar.gz` — 启动器 + 带小地图的版本目录，解压即玩，约 130 MB |
+| `release-sunrise-offline.yml` | `sunrise-offline` | `sunrise-linux-x86_64-offline-<日期>-<时分>.tar.gz` — Sunrise 启动器 + 官方本体，不编译不补丁 |
+| `release-sunrise-native-pack.yml` | `sunrise-native` | `sunrise-native-<build>-<mods>-linux-x86_64-<日期>-<时分>.tar.gz` — 编好的 native mod 版本，约 130 MB |
 
 game 的附件名就是上游那个版本，比如 `horizon-linux-x86_64-nightly-2026-11-20-0a875da.tar.gz`；
 offline 的带构建时刻（北京时间），比如 `horizon-linux-x86_64-offline-2026-11-21-1643.tar.gz`。
@@ -91,6 +93,48 @@ bash tools/ci/build-native-mod.sh       # 本机（首次约 1.1 G 下载：SDK 
 这个 workflow 没有 push 触发：它会替换 Release 附件，而 inputs 的默认值指向旧的 nightly。
 
 runner 上还要 ALSA 与 libudev 的 `-dev` 头文件（编 wgpu/winits 用），workflow 里有这一步。
+
+## Sunrise
+
+两条**完全独立**的链，和上面 Horizon 那几条不共享任何脚本或状态。Sunrise 本体自带离线入口
+（`sunrise-client --name NAME`），所以不需要打补丁；`--developer-single-player` 是个硬拦截，
+但它只在被传进来时才拦，绕开的方式就是「不传」。
+
+### `release-sunrise-offline.yml` → `sunrise-offline`
+
+纯下载 + 组装：官方启动器包 + 官方 `sunrise-linux-x86_64.tar.gz`，解成
+`data/versions/<tag>/` 再写 `.installed`。约 103 MB，不编译、不联网取源码。
+包里三个入口：`PLAY-OFFLINE.sh` 直连本体、`run-offline.sh` 起启动器、`offline-wrapper.sh` 兜底。
+
+版面是 `data/` = 启动器数据目录，`run-offline.sh` 同时导出 `SUNRISE_LAUNCHER_HOME` 与
+`SUNRISE_HOME` —— 少一个会去读 `location.json` 而串到玩家自己装的版本上。
+
+### `release-sunrise-native-pack.yml` → `sunrise-native`
+
+用官方启动器自己的 `native-build` 编 native mod，把编好的版本目录打成离线包（不含资源）。
+约 130 MB：`sunrise-client` + 十二个 `.so` + SDK 库，资源由使用者 `./run-offline.sh prepare` 从
+自己的 Minecraft 生成。
+
+三个不显然的地方：
+
+- **runner 必须 `ubuntu-22.04`**。launcher 二进制最高要 `GLIBC_2.35`，22.04 正好是。24.04 是
+  2.39，`frontier` 里的 `atan2f` 会被绑到 `GLIBC_2.43`，包拿到老发行版上直接起不来。
+  `make-native-pack.sh` 把 2.35 做成闸门，超了不发包。
+- **mod 按 `slug@version` 取，不按 slug**。`mods install <slug>` 拿的是最新 release，而 native mod
+  只在自己 pin 的那个 build 上能用。`fetch-sunrise-mods.py` 读注册表索引，钉版本、校验 sha256、
+  解开成源码目录。
+- **一个 job 里循环多个 build**，不用 matrix：Minecraft 26.3 的完整安装有 1.2 GB / 两万多个文件，
+  matrix 每个 job 都要重拉一遍。
+
+```bash
+gh workflow run release-sunrise-native-pack.yml \
+  -f builds=dev-2026-11-24-3d34bbe \
+  -f mods='frontier@1.0.3 supercam@1.0.2 dynamic-fps@0.5.1 wayfarer-stones@0.9.2' \
+  -f publish=true
+```
+
+`build-sunrise-native-mod.yml` 留着当探针：只收集 `.so` 和 `build.log`，不打包，环境不对的时候
+先跑它比跑正式链省事。
 
 ## 改
 
