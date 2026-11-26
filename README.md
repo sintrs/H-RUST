@@ -115,7 +115,7 @@ runner 上还要 ALSA 与 libudev 的 `-dev` 头文件（编 wgpu/winits 用）�
 约 130 MB：`sunrise-client` + 十二个 `.so` + SDK 库，资源由使用者 `./run-offline.sh prepare` 从
 自己的 Minecraft 生成。
 
-四个不显然的地方：
+六个不显然的地方：
 
 - **runner 必须 `ubuntu-22.04`**。launcher 二进制最高要 `GLIBC_2.35`，22.04 正好是。24.04 是
   2.39，`frontier` 里的 `atan2f` 会被绑到 `GLIBC_2.43`，包拿到老发行版上直接起不来。
@@ -130,6 +130,15 @@ runner 上还要 ALSA 与 libudev 的 `-dev` 头文件（编 wgpu/winits 用）�
   `output_version`（26 字节）。workflow 拿这一版自己的 `sunrise-prepare --check` 问出该写哪个
   数（11-24 要 8、11-25 要 9，不能硬编码），于是省掉 1.2 GB 下载和 694 MB 导出，编译从 142 秒
   降到 81 秒。要逐字节核对就传 `game_files=real`，走完整 prepare。
+- **包里有两个版本目录**：`native-<base>-<hash>` 和同名 base，后者是前者的硬链接副本
+  （tar 记成链接条目，包大小不变，仍 132 MB）。启动器从 `sunrise-release.json` 的 `build`
+  字段认标签，也就是 base 名，所以 `prepare` 要往 `versions/<base>/.local/` 里写；少这一份就死在
+  `.preparing.lock: No such file or directory`，一个资源都导不出来。文档原话：
+  「Client builds share their base version's prepared resources」。用符号链接顶替不行，导出能过，
+  收尾报 `invalid data`。
+- **`PLAY-OFFLINE.sh` 会先把资源镜像到 `./resources/`**。`--resources` 指向 `./data` 里会被
+  cache lease 拒（`cannot acquire launcher cache leases: ... is in the launcher's data folder`），
+  所以找到资源后先硬链接一份到数据目录外再启动，跨分区自动退化成整份拷贝。
 
 ```bash
 gh workflow run release-sunrise-native-pack.yml \
