@@ -270,6 +270,13 @@ jobs:
           if ! gh release view "$TAG" >/dev/null 2>&1; then
             gh release create "$TAG" --title "$NAME" --notes "$NOTE" --latest=false --prerelease
           fi
+          # 附件名带时间戳，--clobber 只覆盖同名文件，不先清就会一次堆一个包。
+          # 这个 Release 的语义是「最新一版」，所以旧的直接删掉。
+          gh release view "$TAG" --json assets -q '.assets[].name' | while read -r old; do
+            [[ -n "$old" ]] || continue
+            echo "删掉旧附件：$old"
+            gh release delete-asset "$TAG" "$old" --yes
+          done
           shopt -s nullglob
           for a in package/*.tar.gz; do
             gh release upload "$TAG" "$a" --clobber
