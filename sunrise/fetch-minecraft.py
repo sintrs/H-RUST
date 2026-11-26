@@ -13,6 +13,7 @@ import argparse
 import concurrent.futures as futures
 import json
 import pathlib
+import shutil
 import sys
 import urllib.request
 
@@ -71,7 +72,6 @@ def main():
         for art in arts:
             if art and art.get("path"):
                 pairs.append((art["url"], "libraries/" + art["path"]))
-
     ai = data["assetIndex"]
     index_path = root / "assets" / "indexes" / f"{ai['id']}.json"
     index_path.parent.mkdir(parents=True, exist_ok=True)
@@ -84,6 +84,37 @@ def main():
 
     with futures.ThreadPoolExecutor(max_workers=24) as ex:
         saved = sum(ex.map(save, pairs))
+
+    # Mojang 重新发布过 26.3：lwjgl-freetype 的版本从 3.4.3 变成 3.4.3-mojang-2.15.0。
+    # sunrise-prepare 按自己发布时那份元数据去找 libraries/.../3.4.3/...jar，于是
+    # 报 "Missing ... lwjgl-freetype-3.4.3.jar"，尽管文件明明在（只是后缀不同）。
+    # 给带 -mojang- 的库再铺一份去后缀的路径，两套元数据就都能找到。
+    aliased = 0
+    for lib in data.get("libraries", []):
+        name = lib.get("name", "")
+        path = (lib.get("downloads") or {}).get("artifact", {}).get("path")
+        if not path or name.count(":") < 2:
+            continue
+        _group, artifact, version = name.split(":")[:3]
+        if "-mojang-" not in version:
+            continue
+        base = version.split("-mojang-")[0]
+        src = root / "libraries" / path
+        if not src.is_file():
+            continue
+        parts = path.split("/")
+        target = root / "libraries" / "/".join(parts[:-2] + [base, f"{artifact}-{base}.jar"])
+        if target.exists():
+            continue
+        target.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            target.hardlink_to(src)
+        except OSError:
+            shutil.copy2(src, target)
+        aliased += 1
+        print(f"兼容副本：{path} -> {target.relative_to(root)}")
+    if aliased:
+        print(f"（Mojang 重发过这个版本的元数据，补了 {aliased} 个旧路径）")
 
     total = sum(f.stat().st_size for f in root.rglob("*") if f.is_file())
     print(f"版本 {args.version}：{len(pairs)} 个文件，新下载 {saved} 个，"
