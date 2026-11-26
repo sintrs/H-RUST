@@ -136,9 +136,13 @@ runner 上还要 ALSA 与 libudev 的 `-dev` 头文件（编 wgpu/winits 用）�
   `.preparing.lock: No such file or directory`，一个资源都导不出来。文档原话：
   「Client builds share their base version's prepared resources」。用符号链接顶替不行，导出能过，
   收尾报 `invalid data`。
-- **`PLAY-OFFLINE.sh` 会先把资源镜像到 `./resources/`**。`--resources` 指向 `./data` 里会被
-  cache lease 拒（`cannot acquire launcher cache leases: ... is in the launcher's data folder`），
-  所以找到资源后先硬链接一份到数据目录外再启动，跨分区自动退化成整份拷贝。
+- **直连前要删 `data/run-leases/`，别镜像资源**。客户端那道 cache lease 闸（退出码 78，
+  `cannot acquire launcher cache leases: … is in the launcher's data folder`）的判据是
+  **目录里有没有 `run-leases/`**：换了 `SUNRISE_HOME` 一样报，删掉标记立刻能起，资源放在
+  `data/versions/<base>/.local/` 原地也能用（实测首帧 78 ms）。租约只写「启动器自己装的版本」，
+  `prepare` 认的是 base，所以包里 `native-<hash>` 永远拿不到租约。`play-offline.sh` 在 exec 前
+  删这个标记；`./run-offline.sh prepare` 下次会自己重建，所以不是一次性的。早期版本把资源
+  硬链接镜像到 `./resources/` 属于误判，已去掉。
 
 ```bash
 gh workflow run release-sunrise-native-pack.yml \

@@ -281,24 +281,20 @@ MISSING
 fi
 RESOURCES=\$(dirname "\$MANIFEST")
 
-# Anything under ./data belongs to the launcher, and the client refuses to read
-# game files from there without a cache lease:
-#   "cannot acquire launcher cache leases: ... is in the launcher's data folder"
-# Mirror it next door once, with hard links so it costs no disk, and play from
-# that copy. Another filesystem falls back to a real copy.
-case \$RESOURCES in
-"\$here"/data/*)
-  mc=\$(basename "\$RESOURCES")
-  target="\$MIRROR/\$mc"
-  if [ ! -f "\$target/sunrise-resources.json" ]; then
-    echo "PLAY-OFFLINE.sh: mirroring the game files into ./resources/\$mc (once, no extra space)" >&2
-    mkdir -p "\$MIRROR"
-    rm -rf "\$target"
-    cp -al "\$RESOURCES" "\$target" 2>/dev/null || cp -a "\$RESOURCES" "\$target"
-  fi
-  RESOURCES=\$target
-  ;;
-esac
+# The launcher marks its data folder with ./data/run-leases/, and the client
+# refuses any build that lives inside such a folder without a lease written for
+# it (exit 78, before a window appears):
+#   "cannot acquire launcher cache leases: ... is in the launcher's data folder
+#    but has no cache lease there"
+# A lease only exists for builds the launcher installed itself. This native
+# build was compiled outside the launcher, so it has none and can never get one.
+# Without the marker the folder counts as an ordinary one, and then both the
+# build and the files prepared next to it start in place (measured: first frame
+# 79 ms), so nothing has to be copied anywhere. ./run-offline.sh prepare puts the
+# marker back every time it runs, which is why this is not a one-off.
+if [ -d "\$here/data/run-leases" ]; then
+  rm -rf "\$here/data/run-leases"
+fi
 
 given=0
 for arg in "\$@"; do

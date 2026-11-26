@@ -129,13 +129,14 @@ resources: if sibling.join("sunrise-resources.json").exists() {
 退出码 78，143 ms 退出，连窗口都不开。租约是启动器 Play 时写在 `<launcher>/run-leases/` 的记录，
 文件名不是资源路径的 sha256（试过），也不打算伪造。
 
-判据比「路径在启动器数据目录里」细：**同一份资源换到自己建的目录**（哪怕
-`SUNRISE_LAUNCHER_HOME` 指过去）就能起，实测 `--frames 3 --test-terrain` 首帧 364 ms。
-它拒的是**启动器登记过的缓存条目**，复制/自建出来的副本不算。
+判据不是「路径在启动器数据目录里」，而是**那个目录里有没有 `run-leases/`**（2026-11-26 坐实）：
+同一个路径，`SUNRISE_HOME` 换到别处一样报；把 `data/run-leases/` 挪走，本体目录和资源**都在
+原地**就能起，实测 `./PLAY-OFFLINE.sh` 首帧 78 ms、worldgen 324 ms。租约只写「启动器自己装的
+那个版本」，`prepare` 认的是 base（`dev-…`），所以 `native-…` 永远补不上它的租约。
 
-所以 `play-offline.sh` 的发现逻辑不用改——包里的资源天然是副本。但别为了省空间把它指向
-`~/.local/share/sunrise/launcher/versions/<tag>`，那样必撞。顺带纠正体积：资源整树是
-**693 MB**（顶层 44 项只有 94 MB，`assets/`、`classes/` 都在子目录里）。
+于是 `play-offline.sh` 在 exec 前删掉 `data/run-leases/`（`./run-offline.sh prepare` 下次会
+自己重建），资源不再镜像，`--resources` 直接指 `data/versions/<base>/.local/sunrise-client/<mc>`。
+早期那版把资源硬链接镜像到 `./resources/` 是误判——闸门不在资源上，白搭一份 694 MB 的目录树。
 
 ## 那 `offline-account.patch` 呢
 留着，但**不是必需品**。它是「如果哪天必须走启动器 Play 按钮」时的备用路线：
