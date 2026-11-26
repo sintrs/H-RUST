@@ -13,6 +13,14 @@ sha256 和下载到的文件逐字节对上 —— 这一条挡住的是传输�
     python3 sunrise/fetch-sunrise-mods.py --out mods-src \\
         frontier@1.0.3 supercam@1.0.2 dynamic-fps@0.5.1
 
+    # 只问「最新版跟这个 build 配不配」，不下载：
+    python3 sunrise/fetch-sunrise-mods.py --check-only --builds dev-2026-11-24-3d34bbe \\
+        --strict-fit frontier@latest supercam@latest
+
+`slug@latest` 取该项目在索引里版本号最大的 release（按数字段比，1.10 > 1.9）。
+`--check-only` 停在 fits 对照之后，末行打印 `mods=<slug>@<version> ...`，供
+定时链路把解析结果原样传给编译步骤 —— 解析一次、复用一次，避免两处各解析一遍。
+
 输出：<out>/<slug>/ 里是解开的源码（sunrise-mod.toml + Cargo.toml + src/ + assets），
 可以直接当 `sunrise-launcher native-build <out>` 的参数。加 --manifest 时另写一份
 JSON，打包脚本把它放进 BUILD-INFO 里。
@@ -21,6 +29,7 @@ import argparse
 import hashlib
 import json
 import pathlib
+import re
 import shutil
 import sys
 import tempfile
@@ -55,14 +64,24 @@ def load_index(url):
         raise SystemExit(f"失败：索引不是合法 JSON（{exc}）")
 
 
+def version_key(version):
+    """1.10.0 > 1.9.0。只取数字段，够索引里的 semver 用。"""
+    return tuple(int(p) for p in re.findall(r"\d+", version or ""))
+
+
 def find_release(projects, slug, version):
     for project in projects:
         if project.get("slug") != slug:
             continue
-        for release in project.get("releases") or []:
+        releases = [r for r in (project.get("releases") or []) if r.get("version")]
+        if version == "latest":
+            if not releases:
+                raise SystemExit(f"失败：{slug} 没有任何 release")
+            return project, max(releases, key=lambda r: version_key(r["version"]))
+        for release in releases:
             if release.get("version") == version:
                 return project, release
-        known = ", ".join(r.get("version", "?") for r in project.get("releases") or [])
+        known = ", ".join(r.get("version", "?") for r in releases)
         raise SystemExit(f"失败：{slug} 没有 {version} 这个版本（有：{known}）")
     known = ", ".join(sorted(p.get("slug", "?") for p in projects))
     raise SystemExit(f"失败：注册表里没有 {slug}（有：{known}）")
@@ -84,31 +103,40 @@ def unpack(smod_path, dest):
 def main():
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("specs", nargs="+", metavar="SLUG@VERSION")
-    ap.add_argument("--out", required=True, help="解开到哪个目录（每个 mod 一个子目录）")
+    ap.add_argument("--out", help="解开到哪个目录（每个 mod 一个子目录）；--check-only 时可省")
     ap.add_argument("--index", default=DEFAULT_INDEX, help="注册表索引地址")
     ap.add_argument("--manifest", help="把取到的东西写成 JSON 放到这里")
     ap.add_argument("--strict-fit", action="store_true",
                     help="build 不在 release 声明的 fits 里就失败（默认只警告）")
     ap.add_argument("--builds", default="",
                     help="要编的目标 build tag，逗号分隔；用来对照每个 release 的 fits")
+    ap.add_argument("--check-only", action="store_true",
+                    help="只解析版本和对照 fits，不下载不打散；末行输出 mods=<slug>@<version> ...")
     args = ap.parse_args()
 
     builds = [b.strip() for b in args.builds.replace(" ", ",").split(",") if b.strip()]
+    if args.check_only and not builds:
+        raise SystemExit("失败：--check-only 必须给 --builds，否则没有可比对的 build")
 
     index = load_index(args.index)
     projects = index.get("projects") or []
     if not projects:
         raise SystemExit("失败：索引里没有 projects")
 
-    out = pathlib.Path(args.out)
-    out.mkdir(parents=True, exist_ok=True)
+    out = pathlib.Path(args.out) if args.out else None
+    if out is not None:
+        out.mkdir(parents=True, exist_ok=True)
+    elif not args.check_only:
+        raise SystemExit("失败：需要 --out，或用 --check-only 只做检查")
     manifest = []
+    resolved = []
 
     for spec in args.specs:
         if "@" not in spec:
             raise SystemExit(f"失败：{spec!r} 不是 slug@version")
         slug, version = spec.rsplit("@", 1)
         project, release = find_release(projects, slug, version)
+        version = release.get("version")
         info = release.get("file") or {}
         url, want = info.get("url"), info.get("sha256")
         if not url or not want:
@@ -123,6 +151,11 @@ def main():
                 if args.strict_fit:
                     raise SystemExit("失败：" + msg)
                 print(f"警告：{msg} —— 照样编，能不能成看 mixin 目标还在不在", file=sys.stderr)
+
+        if args.check_only:
+            resolved.append(f"{slug}@{version}")
+            print(f"{slug} {version}  fits: {', '.join(fits) or '无'}  -> OK")
+            continue
 
         with tempfile.TemporaryDirectory() as tmp:
             smod = pathlib.Path(tmp) / f"{slug}-{version}.smod"
@@ -149,6 +182,10 @@ def main():
         }
         manifest.append(entry)
         print(f"{slug} {version}  ->  {target}  ({project.get('license')})")
+
+    if args.check_only:
+        print("mods=" + " ".join(resolved))
+        return
 
     if args.manifest:
         pathlib.Path(args.manifest).write_text(json.dumps(manifest, indent=2) + "\n")

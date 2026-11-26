@@ -1,0 +1,105 @@
+name: Watch for a new Sunrise native mod combination
+
+# 定时检查有没有「列出的 mod 全都能同时用」的新 build，有就触发编译链，没有就安静退出。
+#
+# 为什么不在这里直接编：native mod 的 `fits` 由各作者按 build 逐个声明，跟进速度不一，
+# 最新版本经常分散在不同 build 上。2026-11-26 实测：frontier / supercam 各自只有一个
+# 版本、只认 dev-2026-11-24-3d34bbe，而 dynamic-fps 的最新版只认 dev-2026-11-26-ba1f24e。
+# 按「取最新 + 全 fits」写，永远凑不齐；plan-native-pack.py 反向求交集，真能凑齐才往下走。
+#
+# 三种结局：
+#   凑不齐            → notice 后退出 0，不编译
+#   Release 已是最新   → notice 后退出 0，不重编
+#   凑齐且有变化       → 触发 release-sunrise-native-pack.yml（那边编译失败会自己标红）
+on:
+  schedule:
+    - cron: '17 3 * * *'
+  workflow_dispatch:
+    inputs:
+      force:
+        description: '忽略「Release 已是最新」的判断，强制重编一次'
+        type: boolean
+        default: false
+
+jobs:
+  plan:
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: read
+      actions: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 找一组能同时用的 build + mod
+        id: plan
+        run: |
+          set -uo pipefail
+          set +e
+          python3 sunrise/plan-native-pack.py \
+            frontier supercam dynamic-fps wayfarer-stones
+          code=$?
+          set -e
+          if [[ $code -eq 2 ]]; then
+            echo "::notice::没有 build 能让这几个 mod 同时使用，跳过本轮"
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          if [[ $code -ne 0 ]]; then
+            echo "::error::plan-native-pack.py 退出码 $code"
+            exit "$code"
+          fi
+
+      # plan 给的 build 是从 mod 索引的 fits 里凑出来的，只证明作者这么声明过，
+      # 不证明上游真有这个 release。这里拿 --build-tag 去上游确认一遍，顺带把
+      # 当前 launcher 版本打进日志。
+      - name: 确认这个 build 在上游真的存在
+        id: probe
+        if: steps.plan.outputs.skip != 'true'
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          BUILD: ${{ steps.plan.outputs.builds }}
+        run: python3 sunrise/probe-sunrise.py --build-tag "$BUILD"
+
+      - name: Release 里是不是已经有这个 build
+        id: check
+        if: steps.plan.outputs.skip != 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          BUILD: ${{ steps.plan.outputs.builds }}
+          FORCE: ${{ inputs.force }}
+        run: |
+          set -euo pipefail
+          if [[ "$FORCE" == "true" ]]; then
+            echo "need=true" >> "$GITHUB_OUTPUT"
+            echo "::notice::force=true，不管现有附件，直接重编"
+            exit 0
+          fi
+          # 附件名里带 build，例如 dev-2026-11-24-3d34bbe-4mods-2026-11-26-1448.tar.gz。
+          # 只比 build：同一个 build 下某个 mod 又发了新版的情况这里看不出来，按 fits 的
+          # 绑法这种情形极少（换版本基本都伴随换 build）。
+          assets=$(gh release view sunrise-native --json assets -q '.assets[].name' 2>/dev/null || true)
+          printf '现有附件：%s\n' "${assets:-（无）}"
+          if grep -qF -- "$BUILD" <<< "$assets"; then
+            echo "need=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::Release 里已经有 $BUILD 的包，跳过"
+          else
+            echo "need=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      # 不传 launcher_tag：交给编译链自己取最新的 launcher@X.Y.Z。probe 读的是
+      # sunrise-launcher 的 `vX.Y.Z`，而编译链从 sunrise 仓库的 `launcher@X.Y.Z` 下载，
+      # 两套 tag 混着传会拼出 404（这条 11-26 差点带着病上线）。
+      - name: 触发编译
+        if: steps.plan.outputs.skip != 'true' && steps.check.outputs.need == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          BUILD: ${{ steps.plan.outputs.builds }}
+          MODS: ${{ steps.plan.outputs.mods }}
+        run: |
+          set -euo pipefail
+          echo "builds=$BUILD"
+          echo "mods=$MODS"
+          gh workflow run release-sunrise-native-pack.yml \
+            -f builds="$BUILD" \
+            -f mods="$MODS"
+          echo "::notice::已触发编译：$BUILD（mods: $MODS）"
