@@ -115,7 +115,7 @@ runner 上还要 ALSA 与 libudev 的 `-dev` 头文件（编 wgpu/winits 用）�
 约 130 MB：`sunrise-client` + 十二个 `.so` + SDK 库，资源由使用者 `./run-offline.sh prepare` 从
 自己的 Minecraft 生成。
 
-三个不显然的地方：
+四个不显然的地方：
 
 - **runner 必须 `ubuntu-22.04`**。launcher 二进制最高要 `GLIBC_2.35`，22.04 正好是。24.04 是
   2.39，`frontier` 里的 `atan2f` 会被绑到 `GLIBC_2.43`，包拿到老发行版上直接起不来。
@@ -123,13 +123,19 @@ runner 上还要 ALSA 与 libudev 的 `-dev` 头文件（编 wgpu/winits 用）�
 - **mod 按 `slug@version` 取，不按 slug**。`mods install <slug>` 拿的是最新 release，而 native mod
   只在自己 pin 的那个 build 上能用。`fetch-sunrise-mods.py` 读注册表索引，钉版本、校验 sha256、
   解开成源码目录。
-- **一个 job 里循环多个 build**，不用 matrix：Minecraft 26.3 的完整安装有 1.2 GB / 两万多个文件，
-  matrix 每个 job 都要重拉一遍。
+- **一个 job 里循环多个 build**，不用 matrix：每个 build 都得 `launcher install` 一份完整本体
+  （约 300 MB），matrix 每个 job 都要重来一遍。
+- **不下载 Minecraft**。`native-build` 只读 SDK 的 rmeta 和 mod 源码，一个字节都不碰游戏资源；
+  它要的「已 prepared」判定只看 `.local/sunrise-client/<mc>/sunrise-prepare.json` 里的
+  `output_version`（26 字节）。workflow 拿这一版自己的 `sunrise-prepare --check` 问出该写哪个
+  数（11-24 要 8、11-25 要 9，不能硬编码），于是省掉 1.2 GB 下载和 694 MB 导出，编译从 142 秒
+  降到 81 秒。要逐字节核对就传 `game_files=real`，走完整 prepare。
 
 ```bash
 gh workflow run release-sunrise-native-pack.yml \
   -f builds=dev-2026-11-24-3d34bbe \
   -f mods='frontier@1.0.3 supercam@1.0.2 dynamic-fps@0.5.1 wayfarer-stones@0.9.2' \
+  -f game_files=none \
   -f publish=true
 ```
 
