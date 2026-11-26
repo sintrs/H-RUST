@@ -42,7 +42,7 @@ Horizon 那三条 workflow 都读上游 nightly，与 `state/*.json` 比对，�
 | `release-game.yml` | `nightly-game` | `horizon-linux-x86_64-<版本 tag>.tar.gz` — 上游 nightly 包原样转发 |
 | `native-mod.yml` | `native-mod` | `horizon-linux-x86_64-native-offline-<日期>-<时分>.tar.gz` — 启动器 + 带小地图的版本目录，解压即玩，约 130 MB |
 | `release-sunrise-offline.yml` | `sunrise-offline` | `sunrise-linux-x86_64-offline-<日期>-<时分>.tar.gz` — Sunrise 启动器 + 官方本体，不编译不补丁 |
-| `release-sunrise-native-pack.yml` | `sunrise-native` | `sunrise-native-<build>-<mods>-linux-x86_64-<日期>-<时分>.tar.gz` — 编好的 native mod 版本，约 130 MB |
+| `release-sunrise-native-pack.yml` | `sunrise-native` | `<build>-<N>mods-<日期>-<时分>.tar.gz` — 编好的 native mod 版本，约 130 MB |
 
 game 的附件名就是上游那个版本，比如 `horizon-linux-x86_64-nightly-2026-11-20-0a875da.tar.gz`；
 offline 的带构建时刻（北京时间），比如 `horizon-linux-x86_64-offline-2026-11-21-1643.tar.gz`。

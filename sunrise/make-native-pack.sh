@@ -18,7 +18,8 @@
 #
 # 环境变量:
 #   MAX_GLIBC   允许的最高 glibc（默认 2.35，给 0 关闭检查）
-#   MODS_LABEL  附件名里的 mod 短标签（默认从 native-mods.json 拼）
+#   MODS_LABEL  包内 BUILD-INFO.txt / PLAY-OFFLINE.txt 里的 mod 短标签（默认从 native-mods.json 拼）
+#   MODS_BRIEF  附件名里的 mod 摘要，默认 `4mods`（逐个拼名会让附件名过百字符）
 #   STAMP       附件名里的时间戳（默认北京时间）
 #   KEEP_WORK=1 保留临时目录
 set -euo pipefail
@@ -124,7 +125,7 @@ else
     echo "    （base 目录 $BASE 不在旁边，跳过这项对照）"
 fi
 
-# 附件名里的 mod 短标签
+# 附件名里的 mod 短标签（只进包内说明文件，不进附件名）
 if [[ -z "${MODS_LABEL:-}" ]]; then
     MODS_LABEL=$(python3 - "$MANIFEST" <<'PY'
 import json, sys
@@ -134,6 +135,17 @@ label = "-".join(ids) if ids else "nomods"
 if len(label) > 48:
     label = f"{ids[0]}-and-{len(ids) - 1}-more"
 print(label)
+PY
+)
+fi
+
+# 附件名里的 mod 摘要：个数就够区分了，逐个拼名会让附件名过百字符
+if [[ -z "${MODS_BRIEF:-}" ]]; then
+    MODS_BRIEF=$(python3 - "$MANIFEST" <<'PY'
+import json, sys
+d = json.load(open(sys.argv[1]))
+n = sum(1 for l in d.get("libraries", []) if l.get("kind") == "mod")
+print(f"{n}mods" if n else "nomods")
 PY
 )
 fi
@@ -386,7 +398,7 @@ Then to play:      ./PLAY-OFFLINE.sh
 See BUILD-INFO.txt for the build identity and the mod list.
 EOF
 
-ASSET="$OUT/sunrise-native-${BASE}-${MODS_LABEL}-linux-x86_64-${STAMP}.tar.gz"
+ASSET="$OUT/${BASE}-${MODS_BRIEF}-${STAMP}.tar.gz"
 echo "==> 打包"
 tar -czf "$ASSET" -C "$ROOT" --sort=name .
 if [[ -n "${GITHUB_ENV:-}" ]]; then
