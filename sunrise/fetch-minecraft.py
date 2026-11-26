@@ -11,6 +11,7 @@ index 和它引用的全部 objects。Mojang 对这些都不需要账号，所�
 """
 import argparse
 import concurrent.futures as futures
+import hashlib
 import json
 import pathlib
 import shutil
@@ -19,6 +20,9 @@ import urllib.request
 
 MANIFEST = "https://piston-meta.mojang.com/mc/game/version_manifest_v2.json"
 OBJECTS = "https://resources.download.minecraft.net/"
+# Mojang 的 Maven，旧版库文件长期留在上面 —— 版本重新发布后 prepare 的 sha1
+# 清单还指着旧路径，靠这里取回来。
+LIBRARIES = "https://libraries.minecraft.net/"
 
 
 def get(url, attempts=3, timeout=180):
@@ -85,10 +89,10 @@ def main():
     with futures.ThreadPoolExecutor(max_workers=24) as ex:
         saved = sum(ex.map(save, pairs))
 
-    # Mojang 重新发布过 26.3：lwjgl-freetype 的版本从 3.4.3 变成 3.4.3-mojang-2.15.0。
-    # sunrise-prepare 按自己发布时那份元数据去找 libraries/.../3.4.3/...jar，于是
-    # 报 "Missing ... lwjgl-freetype-3.4.3.jar"，尽管文件明明在（只是后缀不同）。
-    # 给带 -mojang- 的库再铺一份去后缀的路径，两套元数据就都能找到。
+    # Mojang 重新发布过 26.3：lwjgl-freetype 的版本从 3.4.3 变成 3.4.3-mojang-2.15.0，
+    # 而 sunrise-prepare 带着自己发布时的 sha1 清单去找 libraries/.../3.4.3/...jar。
+    # 光把新文件复制过去不行 —— prepare 会算 sha1 并拒绝（两个 jar 内容不同）。
+    # 正确做法是从 Mojang 的 Maven 取回旧路径那份，它还在，sha1 也正是 pin 的值。
     aliased = 0
     for lib in data.get("libraries", []):
         name = lib.get("name", "")
@@ -99,20 +103,34 @@ def main():
         if "-mojang-" not in version:
             continue
         base = version.split("-mojang-")[0]
-        src = root / "libraries" / path
-        if not src.is_file():
-            continue
         parts = path.split("/")
-        target = root / "libraries" / "/".join(parts[:-2] + [base, f"{artifact}-{base}.jar"])
+        rel = "/".join(parts[:-2] + [base, f"{artifact}-{base}.jar"])
+        target = root / "libraries" / rel
         if target.exists():
             continue
         target.parent.mkdir(parents=True, exist_ok=True)
+
+        data_old = None
         try:
-            target.hardlink_to(src)
-        except OSError:
-            shutil.copy2(src, target)
+            req = urllib.request.Request(LIBRARIES + rel, headers={"User-Agent": "h-rust-native-pack"})
+            with urllib.request.urlopen(req, timeout=120) as r:
+                data_old = r.read()
+        except Exception:  # noqa: BLE001 - Maven 上没有就退回新版，不是致命错误
+            data_old = None
+
+        if data_old:
+            target.write_bytes(data_old)
+            print(f"兼容副本：{rel}（Maven 上的旧版，sha1 {hashlib.sha1(data_old).hexdigest()[:12]}）")
+        else:
+            src = root / "libraries" / path
+            if not src.is_file():
+                continue
+            try:
+                target.hardlink_to(src)
+            except OSError:
+                shutil.copy2(src, target)
+            print(f"兼容副本：{rel}（Maven 没有旧版，用新版顶替）")
         aliased += 1
-        print(f"兼容副本：{path} -> {target.relative_to(root)}")
     if aliased:
         print(f"（Mojang 重发过这个版本的元数据，补了 {aliased} 个旧路径）")
 
