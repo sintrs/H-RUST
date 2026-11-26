@@ -1,6 +1,6 @@
 # H-RUST
 
-上游是 [Horizon](https://github.com/horizon-rust/horizon)，跟它的 nightly 走，打个补丁，做成解压即用的 Linux 包。
+上游是 [Sunrise](https://github.com/sunrise-org/sunrise)，跟它的 dev 走，打个补丁，做成解压即用的 Linux 包。
 
 ## 用
 
