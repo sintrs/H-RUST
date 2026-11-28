@@ -5,6 +5,13 @@
 # 不出缺 mod 的包（宁可不发也不发半个）。
 #
 # 2026-11-28 去掉 wayfarer-stones：它的 fits 只覆盖 dev-2026-11-24-3d34bbe 那一批，
-# 一放进来就把整个组合钉死，后面所有新 build 都跟不了。去掉后交集立刻前进到
+# 一放进来就把整个组合钉死，后面所有新 build 都跟不了。去掉后交集前进到
 # dev-2026-11-26-ba1f24e（frontier@1.0.4 supercam@1.0.3 dynamic-fps@0.5.5）。
-frontier supercam dynamic-fps
+#
+# 2026-11-28 再去掉 dynamic-fps：剩下三个（frontier + supercam + dynamic-fps）能编完，
+# 但停在启动器的产物校验上（invalid native SDK output）。同日实测对照：
+#   {frontier supercam dynamic-fps}  3 个 -> 失败
+#   {frontier supercam wayfarer}     3 个 -> 成功
+#   {frontier supercam dynamic-fps wayfarer} 4 个 -> 成功
+# 跟 mod 数量无关，是 dynamic-fps 参与的这套组合过不了校验；先只留两个。
+frontier supercam

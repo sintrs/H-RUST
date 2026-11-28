@@ -160,7 +160,7 @@ gh workflow run release-sunrise-native-pack.yml
 # 复现一个已知组合（钉 build 和版本）
 gh workflow run release-sunrise-native-pack.yml \
   -f builds=dev-2026-11-26-ba1f24e \
-  -f mods='frontier@1.0.4 supercam@1.0.3 dynamic-fps@0.5.5'
+  -f mods='frontier@1.0.4 supercam@1.0.3'
 ```
 
 `build-sunrise-native-mod.yml` 留着当探针：只收集 `.so` 和 `build.log`，不打包，环境不对的时候

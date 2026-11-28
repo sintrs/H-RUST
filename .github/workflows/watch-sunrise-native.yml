@@ -3,8 +3,7 @@ name: Watch for a new Sunrise native mod combination
 # 定时检查有没有「列出的 mod 全都能同时用」的新 build，有就触发编译链，没有就安静退出。
 #
 # 为什么不在这里直接编：native mod 的 `fits` 由各作者按 build 逐个声明，跟进速度不一，
-# 最新版本经常分散在不同 build 上（2026-11-26 实测：frontier / supercam 当时各自只有
-# 一个版本、只认 dev-2026-11-24-3d34bbe，而 dynamic-fps 的最新版只认 ba1f24e）。
+# 最新版本经常分散在不同 build 上（列出的 mod 里只要有一个 tardy，最新 build 就用不了）。
 # 按「取最新 + 全 fits」写，永远凑不齐；plan-native-pack.py 反向求交集，真能凑齐才往下走。
 # 要带的 mod 清单在 sunrise/native-mod-slugs.txt，和编译链同一份。
 #

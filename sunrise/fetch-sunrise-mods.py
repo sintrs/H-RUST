@@ -11,7 +11,7 @@ sha256 和下载到的文件逐字节对上 —— 这一条挡住的是传输�
 
 用法:
     python3 sunrise/fetch-sunrise-mods.py --out mods-src \\
-        frontier@1.0.3 supercam@1.0.2 dynamic-fps@0.5.1
+        frontier@1.0.4 supercam@1.0.3
 
     # 只问「最新版跟这个 build 配不配」，不下载：
     python3 sunrise/fetch-sunrise-mods.py --check-only --builds dev-2026-11-24-3d34bbe \\
