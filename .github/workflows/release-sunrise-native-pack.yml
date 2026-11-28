@@ -292,6 +292,16 @@ jobs:
             if ! "$LAUNCHER" native-build "$RUNNER_TEMP/mods-src" \
                    --version "$tag" --trust-native-code --json; then
               echo "::error::native-build 失败：$tag（mod 的 mixin 目标可能不在这个 build 里）"
+              # CLI 只肯说 "The native build tool's output couldn't be verified"，
+              # 真正的原因（哪个 mod、哪个符号）只在这个固定位置的日志里。
+              blog="$HOME/.local/share/sunrise/launcher/native/build.log"
+              if [[ -f "$blog" ]]; then
+                echo "──── native/build.log 尾 120 行 ────"
+                tail -120 "$blog"
+                cp "$blog" "$GITHUB_WORKSPACE/native-build-$tag.log" || true
+              else
+                echo "::warning::没找到 $blog"
+              fi
               failed+=("$tag"); continue
             fi
             after=$(ls -1 "$VERSIONS" | sort)
@@ -377,3 +387,13 @@ jobs:
           path: package/
           retention-days: 7
           if-no-files-found: warn
+
+      # 编译失败时日志比日志文件本身更重要：CLI 只有一句 couldn't be verified。
+      - name: Upload the native build logs if something failed
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: native-build-logs
+          path: native-build-*.log
+          retention-days: 7
+          if-no-files-found: ignore
