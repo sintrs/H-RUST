@@ -303,6 +303,15 @@ jobs:
               fi
               echo "──── $ndir 里有什么 ────"
               ls -la "$ndir" || true
+              # 校验失败时唯一能反推的东西：工具给每个库写下的 .identity.json 就是
+              # 启动器逐条核对的记录（file / kind / mod / identity），失败后还在盘上。
+              echo "──── 工具写下的记录 ────"
+              while IFS= read -r f; do
+                echo "  ${f#"$ndir"/}"
+                sed 's/^/    /' "$f"
+              done < <(find "$ndir" -name '*.identity.json' 2>/dev/null | sort)
+              echo "──── 编译出来的库 ────"
+              find "$ndir" -path '*prebuilt-build*' -name '*.so' -printf '%10s %P\n' 2>/dev/null | sort -k2
               mkdir -p "$GITHUB_WORKSPACE/native-logs-$tag"
               cp -a "$ndir/." "$GITHUB_WORKSPACE/native-logs-$tag/" 2>/dev/null || true
               failed+=("$tag"); continue
