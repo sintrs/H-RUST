@@ -294,14 +294,17 @@ jobs:
               echo "::error::native-build 失败：$tag（mod 的 mixin 目标可能不在这个 build 里）"
               # CLI 只肯说 "The native build tool's output couldn't be verified"，
               # 真正的原因（哪个 mod、哪个符号）只在这个固定位置的日志里。
-              blog="$HOME/.local/share/sunrise/launcher/native/build.log"
-              if [[ -f "$blog" ]]; then
-                echo "──── native/build.log 尾 120 行 ────"
-                tail -120 "$blog"
-                cp "$blog" "$GITHUB_WORKSPACE/native-build-$tag.log" || true
+              ndir="$HOME/.local/share/sunrise/launcher/native"
+              if [[ -f "$ndir/build.log" ]]; then
+                echo "──── $ndir/build.log（$(wc -l < "$ndir/build.log") 行，尾 400）────"
+                tail -400 "$ndir/build.log"
               else
-                echo "::warning::没找到 $blog"
+                echo "::warning::没找到 $ndir/build.log"
               fi
+              echo "──── $ndir 里有什么 ────"
+              ls -la "$ndir" || true
+              mkdir -p "$GITHUB_WORKSPACE/native-logs-$tag"
+              cp -a "$ndir/." "$GITHUB_WORKSPACE/native-logs-$tag/" 2>/dev/null || true
               failed+=("$tag"); continue
             fi
             after=$(ls -1 "$VERSIONS" | sort)
@@ -394,6 +397,8 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: native-build-logs
-          path: native-build-*.log
+          path: |
+            native-build-*.log
+            native-logs-*/
           retention-days: 7
           if-no-files-found: ignore
