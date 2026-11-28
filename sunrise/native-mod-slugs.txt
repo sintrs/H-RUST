@@ -1,0 +1,10 @@
+# 要一起编进 native 包里的 mod，空格或换行分隔，# 开头是注释。
+#
+# 这里是唯一的一份清单：watch-sunrise-native.yml 和 release-sunrise-native-pack.yml
+# 都读它，改集合只改这一处。列出的每一个都会被严格编进去，凑不齐就整轮跳过、
+# 不出缺 mod 的包（宁可不发也不发半个）。
+#
+# 2026-11-28 去掉 wayfarer-stones：它的 fits 只覆盖 dev-2026-11-24-3d34bbe 那一批，
+# 一放进来就把整个组合钉死，后面所有新 build 都跟不了。去掉后交集立刻前进到
+# dev-2026-11-26-ba1f24e（frontier@1.0.4 supercam@1.0.3 dynamic-fps@0.5.5）。
+frontier supercam dynamic-fps

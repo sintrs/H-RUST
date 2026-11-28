@@ -13,19 +13,29 @@ supercam 各自只有一个版本、只认 `dev-2026-11-24-3d34bbe`，而 dynami
   4. 每个 mod 在那个 build 上挑版本号最高的
 
 用法:
-    python3 sunrise/plan-native-pack.py \\
-        frontier supercam dynamic-fps wayfarer-stones
+    # 1. 自动求最新能凑齐的组合（workflow 里 dispatch 什么都不填就是这条）
+    python3 sunrise/plan-native-pack.py --slugs-file sunrise/native-mod-slugs.txt
+
+    # 2. 钉一个 build，问「这些 mod 在这个 build 上各能用哪个版本」
+    python3 sunrise/plan-native-pack.py --build dev-2026-11-26-ba1f24e \\
+        --slugs-file sunrise/native-mod-slugs.txt
+
+    # 3. 直接列 slug
+    python3 sunrise/plan-native-pack.py frontier supercam dynamic-fps
 
 输出（stdout，同时追加到 GITHUB_OUTPUT）:
-    builds=dev-2026-11-24-3d34bbe
-    mods=frontier@1.0.3 supercam@1.0.2 dynamic-fps@0.5.1 wayfarer-stones@0.9.2
+    builds=dev-2026-11-26-ba1f24e
+    mods=frontier@1.0.4 supercam@1.0.3 dynamic-fps@0.5.5
 
-退出码：0 有解；2 没有任何 build 能让这些 mod 凑齐（不是脚本出错）。
+退出码：0 有解；2 凑不齐（没有任何 build 能让这些 mod 同时可用，或 --build 指定的
+那个 build 上有 mod 没有可用版本）。2 表示「没版本」，不是脚本出错 —— 调用方据此
+安静跳过一个周期。
 """
 import argparse
 import importlib.util
 import os
 import pathlib
+import re
 import sys
 
 HERE = pathlib.Path(__file__).resolve().parent
@@ -44,19 +54,49 @@ def load_fetch_module():
     return module
 
 
+def read_slugs_file(path):
+    """一行一个或空格分隔，# 开头是注释。"""
+    text = pathlib.Path(path).read_text(encoding="utf-8")
+    slugs = []
+    for line in text.splitlines():
+        line = line.split("#", 1)[0]
+        slugs.extend(part for part in re.split(r"[\s,]+", line) if part)
+    return slugs
+
+
+def emit(build, mods):
+    lines = [f"builds={build}", f"mods={mods}"]
+    print("\n".join(lines))
+    out = os.environ.get("GITHUB_OUTPUT")
+    if out:
+        with open(out, "a", encoding="utf-8") as handle:
+            handle.write("\n".join(lines) + "\n")
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("slugs", nargs="+", metavar="SLUG", help="要一起带的 mod slug")
+    ap.add_argument("slugs", nargs="*", metavar="SLUG",
+                    help="要一起带的 mod slug；不给就从 --slugs-file 读")
+    ap.add_argument("--slugs-file", help="slug 清单文件（空格/逗号/换行分隔）")
+    ap.add_argument("--build", help="只在这个 build 上给每个 mod 挑最高可用版本，不自动求交集")
     ap.add_argument("--index", help="覆盖注册表索引地址")
     args = ap.parse_args()
+
+    slugs = list(args.slugs)
+    if not slugs:
+        if not args.slugs_file:
+            ap.error("要么给 slug 位置参数，要么给 --slugs-file")
+        slugs = read_slugs_file(args.slugs_file)
+    if not slugs:
+        raise SystemExit(f"失败：{args.slugs_file} 里没有 slug")
 
     fetch = load_fetch_module()
     index = fetch.load_index(args.index or fetch.DEFAULT_INDEX)
     projects = {p.get("slug"): p for p in (index.get("projects") or [])}
 
     usable = {}
-    for slug in args.slugs:
+    for slug in slugs:
         project = projects.get(slug)
         if project is None:
             raise SystemExit(f"失败：注册表里没有 {slug}")
@@ -75,6 +115,18 @@ def main():
         print(f"{slug:16} 覆盖 {len(table)} 个 build，最新那个上可用 {table[max(table)]}",
               file=sys.stderr)
 
+    # 钉死一个 build：只问「这些 mod 在这个 build 上各能用哪个版本」。
+    if args.build:
+        want = args.build
+        missing = [(slug, sorted(table)) for slug, table in usable.items() if want not in table]
+        if missing:
+            print(f"{want} 上凑不齐：", file=sys.stderr)
+            for slug, builds in missing:
+                print(f"  {slug} 只在 {', '.join(builds) or '（无）'}", file=sys.stderr)
+            return 2
+        emit(want, " ".join(f"{slug}@{usable[slug][want]}" for slug in slugs))
+        return 0
+
     common = set.intersection(*(set(t) for t in usable.values()))
     if not common:
         print("没有能让这些 mod 同时使用的 build：", file=sys.stderr)
@@ -83,19 +135,12 @@ def main():
         return 2
 
     build = max(common)
-    mods = " ".join(f"{slug}@{usable[slug][build]}" for slug in args.slugs)
-    lines = [f"builds={build}", f"mods={mods}"]
-
-    for slug in args.slugs:
+    for slug in slugs:
         others = sorted(set(usable[slug]) - {build})
         if others:
             print(f"  {slug} 在别的 build 上还有：{', '.join(others)}", file=sys.stderr)
 
-    print("\n".join(lines))
-    out = os.environ.get("GITHUB_OUTPUT")
-    if out:
-        with open(out, "a", encoding="utf-8") as handle:
-            handle.write("\n".join(lines) + "\n")
+    emit(build, " ".join(f"{slug}@{usable[slug][build]}" for slug in slugs))
     return 0
 
 

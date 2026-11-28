@@ -28,13 +28,13 @@ on:
   workflow_dispatch:
     inputs:
       builds:
-        description: '要编的 build tag，空格或逗号分隔（每个都会单独出一个包）'
+        description: '要编的 build tag，空格或逗号分隔（每个都会单独出一个包）；留空 = 自动取最新能凑齐的'
         type: string
-        default: 'dev-2026-11-24-3d34bbe'
+        default: ''
       mods:
-        description: 'mod 列表，slug@version，空格分隔；顺序无关，依赖会自动编进去'
+        description: 'mod 列表，slug@version，空格分隔；留空 = 在这个 build 上取各 mod 的最高可用版本'
         type: string
-        default: 'frontier@1.0.3 supercam@1.0.2 dynamic-fps@0.5.1 wayfarer-stones@0.9.2'
+        default: ''
       minecraft:
         description: '这些 build 对应的 Minecraft 版本'
         type: string
@@ -51,9 +51,9 @@ on:
           - real
         default: none
       publish:
-        description: '发到滚动 Release sunrise-native'
+        description: '发到滚动 Release sunrise-native（旧附件会被替换）'
         type: boolean
-        default: false
+        default: true
       dry_run:
         description: '只查注册表和版本，不下载不编译'
         type: boolean
@@ -75,6 +75,53 @@ jobs:
       GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
     steps:
       - uses: actions/checkout@v4
+
+      # builds / mods 两个输入都可以留空 —— 留空就自己算「最新能凑齐的组合」：
+      # 清单在 sunrise/native-mod-slugs.txt（和 watch 链同一份），plan-native-pack.py
+      # 反求交集取最新 build，再在该 build 上给每个 mod 挑最高可用版本。所以手动
+      # dispatch 什么都不填 = 永远出当下最新的可用包。
+      # 填了就是复现已知组合：填 builds 只填一个、mods 留空，会问「这个 build 上各
+      # mod 能用哪版」；两个都填就原样照编。放在装依赖之前，凑不齐能立刻红。
+      - name: Resolve the build and mod set
+        id: resolve
+        env:
+          IN_BUILDS: ${{ inputs.builds }}
+          IN_MODS: ${{ inputs.mods }}
+        run: |
+          set -euo pipefail
+          builds=$(printf '%s' "${IN_BUILDS//,/ }" | xargs)
+          list=()
+          if [[ -n "$builds" ]]; then read -ra list <<< "$builds"; fi
+
+          if [[ -n "${IN_MODS// /}" ]]; then
+            if ((${#list[@]} == 0)); then
+              echo "::error::给了 mods 就得给 builds —— 版本号只对某个 build 成立"
+              exit 1
+            fi
+            echo "::notice::用指定的组合：${builds} | ${IN_MODS}"
+            echo "builds=$builds" >> "$GITHUB_OUTPUT"
+            echo "mods=$IN_MODS" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          code=0
+          if ((${#list[@]} == 0)); then
+            python3 sunrise/plan-native-pack.py \
+              --slugs-file sunrise/native-mod-slugs.txt || code=$?
+          elif ((${#list[@]} == 1)); then
+            python3 sunrise/plan-native-pack.py --build "${list[0]}" \
+              --slugs-file sunrise/native-mod-slugs.txt || code=$?
+          else
+            echo "::error::mods 留空时只能给一个 build（各 build 上能用的 mod 版本不同）；要一次编多个就把 mods 写全"
+            exit 1
+          fi
+          if [[ $code -eq 2 ]]; then
+            echo "::error::凑不齐：清单里的 mod 没有能同时使用的 build（或该 build 上缺版本）。把 mods 显式写全，或等作者发新版"
+            exit 1
+          elif [[ $code -ne 0 ]]; then
+            echo "::error::plan-native-pack.py 退出码 $code"
+            exit "$code"
+          fi
 
       # launcher 是 eframe 程序，哪怕只跑 CLI 子命令也要 X11/Wayland 的符号；
       # 编译侧还要 -lasound -ludev，所以 dev 包一起装。
@@ -159,8 +206,8 @@ jobs:
       - name: Fetch the mod sources at the pinned versions
         if: ${{ !inputs.dry_run }}
         env:
-          MODS: ${{ inputs.mods }}
-          BUILDS: ${{ inputs.builds }}
+          MODS: ${{ steps.resolve.outputs.mods }}
+          BUILDS: ${{ steps.resolve.outputs.builds }}
         run: |
           set -euo pipefail
           read -ra specs <<< "$(printf '%s' "$MODS" | tr ',' ' ')"
@@ -177,7 +224,7 @@ jobs:
         # 但别让一个卡住的 native-build 吃掉整个 job 的 150 分钟。
         timeout-minutes: 60
         env:
-          BUILDS: ${{ inputs.builds }}
+          BUILDS: ${{ steps.resolve.outputs.builds }}
           MC: ${{ inputs.minecraft }}
           GAME_FILES: ${{ inputs.game_files }}
         run: |
@@ -219,7 +266,7 @@ jobs:
 
           mapfile -t list < <(printf '%s' "${BUILDS//,/ }" | xargs -n1 2>/dev/null)
           if ((${#list[@]} == 0)); then
-            echo "::error::没有给 build（inputs.builds 是空的）"; exit 1
+            echo "::error::没有 build 可编（Resolve 那步没给出 builds）"; exit 1
           fi
           echo "要编 ${#list[@]} 个 build：${list[*]}"
           for tag in "${list[@]}"; do

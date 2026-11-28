@@ -21,7 +21,7 @@
 #   LAUNCHER_VERSION  启动器自报的版本（`sunrise-launcher --version` 的整行），写进包内说明；
 #               不传就写 (not recorded) —— 二进制 stripped，事后没别的途径查
 #   MODS_LABEL  包内 BUILD-INFO.txt / PLAY-OFFLINE.txt 里的 mod 短标签（默认从 native-mods.json 拼）
-#   MODS_BRIEF  附件名里的 mod 摘要，默认 `4mods`（逐个拼名会让附件名过百字符）
+#   MODS_BRIEF  附件名里的 mod 摘要，默认按 manifest 的 mod 数写成 `Nmods`（逐个拼名会让附件名过百字符）
 #   STAMP       附件名里的时间戳（默认北京时间）
 #   KEEP_WORK=1 保留临时目录
 set -euo pipefail

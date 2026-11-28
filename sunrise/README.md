@@ -315,7 +315,8 @@ Sunrise 的 bug。冒烟脚本把这类失败识别成 `skipped`，不判失败�
 | 文件 | 作用 |
 |---|---|
 | `probe-sunrise.py` | 读两个仓库当前发布什么，输出 `build`/`commit`/`launcher_tag` |
-| `plan-native-pack.py` | 在 mod 注册表里反向求解：哪个 build 能让列出的 mod 同时可用（取最新），输出 `builds`/`mods`；凑不齐退出 2 |
+| `plan-native-pack.py` | 在 mod 注册表里反向求解：哪个 build 能让列出的 mod 同时可用（取最新），输出 `builds`/`mods`；`--build TAG` 改问「这个 build 上各 mod 能用哪版」；slug 可用 `--slugs-file` 从文件读；凑不齐退出 2 |
+| `native-mod-slugs.txt` | native 包要带的 mod 清单（唯一一份，watch 链和编译链都读它） |
 | `fetch-sunrise-mods.py` | 按 `slug@version`（或 `slug@latest`）从注册表索引取 `.smod`、校 sha256、解开成源码；`--check-only` 只解析不下载 |
 | `fetch-sunrise-asset.sh` | 下资产，对 `SHA256SUMS` + GitHub digest 双重校验 |
 | `check-downloaded-build.py` | 下载到的 `sunrise-release.json` 与探测到的 commit 对账 |

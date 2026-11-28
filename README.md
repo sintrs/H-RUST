@@ -116,8 +116,13 @@ runner 上还要 ALSA 与 libudev 的 `-dev` 头文件（编 wgpu/winits 用）�
 约 130 MB：`sunrise-client` + 十二个 `.so` + SDK 库，资源由使用者 `./run-offline.sh prepare` 从
 自己的 Minecraft 生成。
 
-七个不显然的地方：
+八个不显然的地方：
 
+- **`builds` / `mods` 留空就自动求最新**。要带的 mod 清单在 `sunrise/native-mod-slugs.txt`
+  （watch 链读的是同一份），`plan-native-pack.py` 反求交集取最新 build，再在该 build 上给每个
+  mod 挑最高可用版本 —— 所以手动 dispatch 什么都不填就是「当下最新的可用包」。只填一个 build
+  会问「这个 build 上各 mod 能用哪版」；`mods` 留空给多个 build 会直接报错（各 build 的可用
+  版本不同，得把 mods 写全）。`publish` 默认 `true`，watch 触发的那条链也直接发 Release。
 - **runner 必须 `ubuntu-22.04`**。launcher 二进制最高要 `GLIBC_2.35`，22.04 正好是。24.04 是
   2.39，`frontier` 里的 `atan2f` 会被绑到 `GLIBC_2.43`，包拿到老发行版上直接起不来。
   `make-native-pack.sh` 把 2.35 做成闸门，超了不发包。
@@ -149,11 +154,13 @@ runner 上还要 ALSA 与 libudev 的 `-dev` 头文件（编 wgpu/winits 用）�
   硬链接镜像到 `./resources/` 属于误判，已去掉。
 
 ```bash
+# 什么都不填：当下最新能凑齐的 build + 各 mod 在该 build 上的最高可用版本
+gh workflow run release-sunrise-native-pack.yml
+
+# 复现一个已知组合（钉 build 和版本）
 gh workflow run release-sunrise-native-pack.yml \
-  -f builds=dev-2026-11-24-3d34bbe \
-  -f mods='frontier@1.0.3 supercam@1.0.2 dynamic-fps@0.5.1 wayfarer-stones@0.9.2' \
-  -f game_files=none \
-  -f publish=true
+  -f builds=dev-2026-11-26-ba1f24e \
+  -f mods='frontier@1.0.4 supercam@1.0.3 dynamic-fps@0.5.5'
 ```
 
 `build-sunrise-native-mod.yml` 留着当探针：只收集 `.so` 和 `build.log`，不打包，环境不对的时候

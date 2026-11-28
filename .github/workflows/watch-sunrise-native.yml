@@ -3,9 +3,10 @@ name: Watch for a new Sunrise native mod combination
 # 定时检查有没有「列出的 mod 全都能同时用」的新 build，有就触发编译链，没有就安静退出。
 #
 # 为什么不在这里直接编：native mod 的 `fits` 由各作者按 build 逐个声明，跟进速度不一，
-# 最新版本经常分散在不同 build 上。2026-11-26 实测：frontier / supercam 各自只有一个
-# 版本、只认 dev-2026-11-24-3d34bbe，而 dynamic-fps 的最新版只认 dev-2026-11-26-ba1f24e。
+# 最新版本经常分散在不同 build 上（2026-11-26 实测：frontier / supercam 当时各自只有
+# 一个版本、只认 dev-2026-11-24-3d34bbe，而 dynamic-fps 的最新版只认 ba1f24e）。
 # 按「取最新 + 全 fits」写，永远凑不齐；plan-native-pack.py 反向求交集，真能凑齐才往下走。
+# 要带的 mod 清单在 sunrise/native-mod-slugs.txt，和编译链同一份。
 #
 # 三种结局：
 #   凑不齐            → notice 后退出 0，不编译
@@ -35,8 +36,8 @@ jobs:
         run: |
           set -uo pipefail
           set +e
-          python3 sunrise/plan-native-pack.py \
-            frontier supercam dynamic-fps wayfarer-stones
+          # 清单在 sunrise/native-mod-slugs.txt —— 和编译链读的是同一份，改集合只改那一处。
+          python3 sunrise/plan-native-pack.py --slugs-file sunrise/native-mod-slugs.txt
           code=$?
           set -e
           if [[ $code -eq 2 ]]; then
@@ -74,7 +75,7 @@ jobs:
             echo "::notice::force=true，不管现有附件，直接重编"
             exit 0
           fi
-          # 附件名里带 build，例如 dev-2026-11-24-3d34bbe-4mods-2026-11-26-1448.tar.gz。
+          # 附件名里带 build，例如 dev-2026-11-26-ba1f24e-3mods-2026-11-27-1117.tar.gz。
           # 只比 build：同一个 build 下某个 mod 又发了新版的情况这里看不出来，按 fits 的
           # 绑法这种情形极少（换版本基本都伴随换 build）。
           assets=$(gh release view sunrise-native --json assets -q '.assets[].name' 2>/dev/null || true)
