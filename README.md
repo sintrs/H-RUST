@@ -126,9 +126,14 @@ runner 上还要 ALSA 与 libudev 的 `-dev` 头文件（编 wgpu/winits 用）�
 - **runner 必须 `ubuntu-22.04`**。launcher 二进制最高要 `GLIBC_2.35`，22.04 正好是。24.04 是
   2.39，`frontier` 里的 `atan2f` 会被绑到 `GLIBC_2.43`，包拿到老发行版上直接起不来。
   `make-native-pack.sh` 把 2.35 做成闸门，超了不发包。
-- **`launcher_tag` 留空就取最新**，查的是 `sunrise-org/sunrise` 的 `launcher@X.Y.Z`（真去下载的
-  那个仓库），不查 `sunrise-org/sunrise-launcher` 的 `vX.Y.Z` —— 两套 tag、两个仓库、同步有先后，
-  混着传会拼出 404 的 URL。实际用到的版本写在包内 `BUILD-INFO.txt` 的 `Launcher:` 行里。
+- **`launcher_tag` 现在钉在 `launcher@1.3.9`**（留空仍 = 取最新，只是默认值不是空的）。原因是
+  1.3.10 的产物校验会拒掉「所有 mod 都只依赖 SDK 自带 API」的组合：同一套 build + mod，1.3.10
+  报 `invalid native SDK output`，1.3.9 正常出包。含 wayfarer 的组合在 1.3.10 下反而能过，因为它
+  依赖 `serde`/`serde_json`/`log`，会多编出一个 `libsunrise_registry_shared.so`，正好把校验补齐 ——
+  去掉 wayfarer 之后就没有这个库了，所以必须降版本。上游修掉这条之前不要取消钉版本。
+  另外，留空时查的是 `sunrise-org/sunrise` 的 `launcher@X.Y.Z`（真去下载的那个仓库），不查
+  `sunrise-org/sunrise-launcher` 的 `vX.Y.Z` —— 两套 tag、两个仓库、同步有先后，混着传会拼出
+  404 的 URL。实际用到的版本写在包内 `BUILD-INFO.txt` 的 `Launcher:` 行里。
 - **mod 按 `slug@version` 取，不按 slug**。`mods install <slug>` 拿的是最新 release，而 native mod
   只在自己 pin 的那个 build 上能用。`fetch-sunrise-mods.py` 读注册表索引，钉版本、校验 sha256、
   解开成源码目录。
@@ -160,7 +165,7 @@ gh workflow run release-sunrise-native-pack.yml
 # 复现一个已知组合（钉 build 和版本）
 gh workflow run release-sunrise-native-pack.yml \
   -f builds=dev-2026-11-26-ba1f24e \
-  -f mods='frontier@1.0.4 supercam@1.0.3'
+  -f mods='frontier@1.0.4 supercam@1.0.3 dynamic-fps@0.5.5'
 ```
 
 `build-sunrise-native-mod.yml` 留着当探针：只收集 `.so` 和 `build.log`，不打包，环境不对的时候

@@ -25,7 +25,7 @@ supercam 各自只有一个版本、只认 `dev-2026-11-24-3d34bbe`，而 dynami
 
 输出（stdout，同时追加到 GITHUB_OUTPUT）:
     builds=dev-2026-11-26-ba1f24e
-    mods=frontier@1.0.4 supercam@1.0.3
+    mods=frontier@1.0.4 supercam@1.0.3 dynamic-fps@0.5.5
 
 退出码：0 有解；2 凑不齐（没有任何 build 能让这些 mod 同时可用，或 --build 指定的
 那个 build 上有 mod 没有可用版本）。2 表示「没版本」，不是脚本出错 —— 调用方据此
