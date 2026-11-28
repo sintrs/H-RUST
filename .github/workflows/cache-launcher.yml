@@ -61,9 +61,13 @@ jobs:
             echo "::error::包只有 $size bytes，不像启动器压缩包"
             exit 1
           fi
-          # 里面必须有可执行的 sunrise-launcher，否则搬过去也没用。
-          tar -tzf launcher.tar.gz | grep -q 'sunrise-launcher$' \
+          # 里面必须有 sunrise-launcher，否则搬过去也没用。
+          # 先落成清单再匹配：直接 `tar | grep -q` 的话 grep 一命中就退出，tar 收到
+          # SIGPIPE 报 write error，配着 pipefail 会把整条管道判失败。
+          tar -tzf launcher.tar.gz > listing.txt
+          grep -qxE '(.*/)?sunrise-launcher' listing.txt \
             || { echo "::error::压缩包里没有 sunrise-launcher"; exit 1; }
+          echo "包内条目 $(wc -l < listing.txt) 个，启动器：$(grep -E '(.*/)?sunrise-launcher$' listing.txt | head -1)"
           sha256sum launcher.tar.gz | tee SHA256SUMS.txt
 
       - name: Upload it to this repository's rolling release
